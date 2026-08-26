@@ -1,9 +1,12 @@
 {
   "manifest_version": 3,
   "name": "OpenEvent Guide",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI onboarding assistant for OpenEvent",
   "permissions": [],
+  "host_permissions": [
+    "http://localhost:3847/*"
+  ],
   "content_scripts": [
     {
       "matches": [
@@ -16,6 +19,9 @@
       "run_at": "document_idle"
     }
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
   "icons": {
     "48": "icon.png"
   }

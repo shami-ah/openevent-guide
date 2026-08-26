@@ -1,27 +1,38 @@
 /**
- * OpenEvent Guide - Chrome Extension Content Script
- * Automatically injects the guide agent + chat widget on OpenEvent pages.
+ * OpenEvent Guide - Chrome Extension
+ * Loads the SDK and boots it with the current user's info.
+ * For development/demo only. Production uses a script tag in the app HTML.
  */
 
 (function () {
-  const SERVER = "http://localhost:3847";
+  if (window.OpenEventGuide) return;
 
-  // Don't inject twice
-  if (document.getElementById("oe-guide-agent-script")) return;
+  var SERVER = "https://guide.openevent.io";
 
-  // Inject browser agent
-  const agent = document.createElement("script");
-  agent.id = "oe-guide-agent-script";
-  agent.src = SERVER + "/agent.js";
-  agent.dataset.guideServer = SERVER.replace("http", "ws");
-  document.body.appendChild(agent);
+  var sdk = document.createElement("script");
+  sdk.src = SERVER + "/sdk.js";
+  sdk.onload = function () {
+    // Try to get user info from the app's auth state
+    var user = { user_id: "demo", name: "Demo" };
+    try {
+      var stored = localStorage.getItem("sb-igrfkpxebvuvfwogondx-auth-token");
+      if (stored) {
+        var parsed = JSON.parse(stored);
+        var u = parsed.user || parsed;
+        user = {
+          user_id: u.id || "unknown",
+          email: u.email || "",
+          name: (u.user_metadata && u.user_metadata.full_name) || u.email || "User"
+        };
+      }
+    } catch (e) { /* ignore */ }
 
-  // Inject chat widget
-  const widget = document.createElement("script");
-  widget.id = "oe-guide-widget-script";
-  widget.src = SERVER + "/widget.js";
-  widget.dataset.guideServer = SERVER;
-  document.body.appendChild(widget);
-
-  console.log("[OpenEvent Guide] Injected on", window.location.hostname);
+    window.OpenEventGuide.boot({
+      user_id: user.user_id,
+      email: user.email,
+      name: user.name,
+      server: SERVER
+    });
+  };
+  document.head.appendChild(sdk);
 })();
