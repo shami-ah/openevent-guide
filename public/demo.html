@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenEvent Guide - Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .hero {
+      text-align: center;
+      max-width: 640px;
+    }
+
+    h1 {
+      font-size: 48px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #6366f1 0%, #a78bfa 50%, #6366f1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 16px;
+    }
+
+    .subtitle {
+      font-size: 20px;
+      color: #94a3b8;
+      margin-bottom: 40px;
+      line-height: 1.6;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      max-width: 640px;
+      width: 100%;
+      margin-bottom: 40px;
+    }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 24px;
+      text-align: left;
+    }
+
+    .card h3 {
+      font-size: 16px;
+      color: #f1f5f9;
+      margin-bottom: 8px;
+    }
+
+    .card p {
+      font-size: 14px;
+      color: #94a3b8;
+      line-height: 1.5;
+    }
+
+    .card .icon {
+      font-size: 28px;
+      margin-bottom: 12px;
+    }
+
+    .bookmarklet-section {
+      text-align: center;
+      max-width: 640px;
+      width: 100%;
+    }
+
+    .bookmarklet-section h2 {
+      font-size: 24px;
+      margin-bottom: 12px;
+    }
+
+    .bookmarklet-section p {
+      color: #94a3b8;
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+
+    .bookmarklet-link {
+      display: inline-block;
+      padding: 14px 32px;
+      background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+      color: white;
+      text-decoration: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: grab;
+      transition: transform 0.2s;
+    }
+
+    .bookmarklet-link:hover {
+      transform: scale(1.05);
+    }
+
+    .instructions {
+      margin-top: 16px;
+      font-size: 13px;
+      color: #64748b;
+    }
+
+    .code-block {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 24px;
+      text-align: left;
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      font-size: 13px;
+      color: #e2e8f0;
+      overflow-x: auto;
+      line-height: 1.6;
+    }
+
+    .code-block .comment { color: #64748b; }
+    .code-block .string { color: #a78bfa; }
+    .code-block .tag { color: #6366f1; }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <h1>OpenEvent Guide</h1>
+    <p class="subtitle">
+      AI-powered interactive onboarding for OpenEvent.<br>
+      Chat with the guide. It controls your browser.
+    </p>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="icon">💬</div>
+      <h3>Chat Interface</h3>
+      <p>Ask questions in plain language. Get answers or a live guided walkthrough.</p>
+    </div>
+    <div class="card">
+      <div class="icon">🎯</div>
+      <h3>Browser Control</h3>
+      <p>The guide navigates, highlights, and clicks elements in your app.</p>
+    </div>
+    <div class="card">
+      <div class="icon">📺</div>
+      <h3>Subtitles</h3>
+      <p>Every action is explained with on-screen subtitles so you learn as you go.</p>
+    </div>
+    <div class="card">
+      <div class="icon">🌍</div>
+      <h3>Multilingual</h3>
+      <p>Speaks English, German, and French - detects your language automatically.</p>
+    </div>
+  </div>
+
+  <div class="bookmarklet-section">
+    <h2>Try It On OpenEvent</h2>
+    <p>
+      Drag this button to your bookmarks bar, then click it while on
+      <strong>app.openevent.io</strong> to activate the guide.
+    </p>
+
+    <a class="bookmarklet-link" href="javascript:void((function(){var s=document.createElement('script');s.src='http://localhost:3847/agent.js';s.dataset.guideServer='ws://localhost:3847';document.body.appendChild(s);var w=document.createElement('script');w.src='http://localhost:3847/widget.js';w.dataset.guideServer='http://localhost:3847';document.body.appendChild(w)})())">
+      OpenEvent Guide
+    </a>
+
+    <p class="instructions">
+      Drag the purple button above to your bookmarks bar.
+      Then visit app.openevent.io and click the bookmark.
+    </p>
+
+    <div class="code-block">
+      <span class="comment">&lt;!-- Or add these script tags to your HTML --&gt;</span><br>
+      <span class="tag">&lt;script</span> src=<span class="string">"http://localhost:3847/agent.js"</span><br>
+      &nbsp;&nbsp;data-guide-server=<span class="string">"ws://localhost:3847"</span><span class="tag">&gt;&lt;/script&gt;</span><br>
+      <span class="tag">&lt;script</span> src=<span class="string">"http://localhost:3847/widget.js"</span><br>
+      &nbsp;&nbsp;data-guide-server=<span class="string">"http://localhost:3847"</span><span class="tag">&gt;&lt;/script&gt;</span>
+    </div>
+  </div>
+</body>
+</html>
