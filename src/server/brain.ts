@@ -1,18 +1,19 @@
 /**
  * The Brain - routes user questions to either text answers or guided flows.
  *
- * Uses Claude API with function calling. The LLM decides:
+ * Uses OpenAI API with function calling. The LLM decides:
  * 1. Answer the question with text (informational)
  * 2. Guide the user through a flow (hands-on walkthrough)
  * 3. Both: explain briefly, then offer to guide
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
+import type { ChatCompletionTool } from "openai/resources/chat/completions.js";
 import { getAllFlows, getFlowById } from "../flows/registry.js";
 import { KNOWLEDGE_BASE } from "../flows/knowledge.js";
-import type { WSMessageToAgent } from "../shared/types.js";
+import type { AgentCommand, WSMessageToAgent } from "../shared/types.js";
 
-const anthropic = new Anthropic();
+const openai = new OpenAI();
 
 const SYSTEM_PROMPT = `You are the OpenEvent Guide, an AI assistant built into the OpenEvent platform.
 You help venue managers, event organizers, and club owners learn how to use OpenEvent.
@@ -53,81 +54,87 @@ ${getAllFlows()
 `;
 
 /** Tools the LLM can call */
-const TOOLS: Anthropic.Tool[] = [
+const TOOLS: ChatCompletionTool[] = [
   {
-    name: "guide_flow",
-    description:
-      "Start a predefined guided walkthrough. Use this when a user asks how to do something and a matching flow exists. The flow will navigate their browser, highlight elements, and show subtitles explaining each step.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        flow_id: {
-          type: "string",
-          description: "The ID of the flow to execute (from the available flows list)",
+    type: "function",
+    function: {
+      name: "guide_flow",
+      description:
+        "Start a predefined guided walkthrough. Use this when a user asks how to do something and a matching flow exists. The flow will navigate their browser, highlight elements, and show subtitles explaining each step.",
+      parameters: {
+        type: "object",
+        properties: {
+          flow_id: {
+            type: "string",
+            description: "The ID of the flow to execute (from the available flows list)",
+          },
+          intro_message: {
+            type: "string",
+            description:
+              "A brief message to show the user before starting the guide (1-2 sentences)",
+          },
         },
-        intro_message: {
-          type: "string",
-          description:
-            "A brief message to show the user before starting the guide (1-2 sentences)",
-        },
+        required: ["flow_id", "intro_message"],
       },
-      required: ["flow_id", "intro_message"],
     },
   },
   {
-    name: "execute_actions",
-    description:
-      "Execute custom browser actions when no predefined flow matches. Use this to navigate to a specific page, highlight a specific element, or perform a custom sequence of actions to help the user.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        actions: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              type: {
-                type: "string",
-                enum: [
-                  "navigate",
-                  "highlight",
-                  "click",
-                  "fill",
-                  "scroll",
-                  "subtitle",
-                  "wait",
-                ],
+    type: "function",
+    function: {
+      name: "execute_actions",
+      description:
+        "Execute custom browser actions when no predefined flow matches. Use this to navigate to a specific page, highlight a specific element, or perform a custom sequence of actions to help the user.",
+      parameters: {
+        type: "object",
+        properties: {
+          actions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  enum: [
+                    "navigate",
+                    "highlight",
+                    "click",
+                    "fill",
+                    "scroll",
+                    "subtitle",
+                    "wait",
+                  ],
+                },
+                path: { type: "string", description: "For navigate: the URL path" },
+                selector: {
+                  type: "string",
+                  description: "CSS selector for highlight/click/fill/scroll",
+                },
+                value: { type: "string", description: "For fill: the value to type" },
+                text: { type: "string", description: "For subtitle: the text to show" },
+                subtitle: {
+                  type: "string",
+                  description: "Subtitle to show during this action",
+                },
+                ms: {
+                  type: "number",
+                  description: "For wait: milliseconds to wait",
+                },
+                duration: {
+                  type: "number",
+                  description: "For highlight/subtitle: how long to show (ms)",
+                },
               },
-              path: { type: "string", description: "For navigate: the URL path" },
-              selector: {
-                type: "string",
-                description: "CSS selector for highlight/click/fill/scroll",
-              },
-              value: { type: "string", description: "For fill: the value to type" },
-              text: { type: "string", description: "For subtitle: the text to show" },
-              subtitle: {
-                type: "string",
-                description: "Subtitle to show during this action",
-              },
-              ms: {
-                type: "number",
-                description: "For wait: milliseconds to wait",
-              },
-              duration: {
-                type: "number",
-                description: "For highlight/subtitle: how long to show (ms)",
-              },
+              required: ["type"],
             },
-            required: ["type"],
+            description: "Array of browser actions to execute in sequence",
           },
-          description: "Array of browser actions to execute in sequence",
+          explanation: {
+            type: "string",
+            description: "Brief explanation of what you're about to show the user",
+          },
         },
-        explanation: {
-          type: "string",
-          description: "Brief explanation of what you're about to show the user",
-        },
+        required: ["actions", "explanation"],
       },
-      required: ["actions", "explanation"],
     },
   },
 ];
@@ -142,55 +149,59 @@ export async function handleChat(
   agentConnected: boolean
 ): Promise<BrainResponse> {
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      tools: agentConnected ? TOOLS : [],
-      messages: history.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        ...history.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        })),
+      ],
+      tools: agentConnected ? TOOLS : undefined,
+      tool_choice: agentConnected ? "auto" : undefined,
     });
 
-    // Process the response
+    const message = response.choices[0]?.message;
+    if (!message) {
+      return { text: "I didn't get a response. Please try again." };
+    }
+
     let textParts: string[] = [];
     let guidedSomething = false;
 
-    for (const block of response.content) {
-      if (block.type === "text") {
-        textParts.push(block.text);
-      } else if (block.type === "tool_use") {
-        guidedSomething = true;
+    // Collect text content
+    if (message.content) {
+      textParts.push(message.content);
+    }
 
-        if (block.name === "guide_flow") {
-          const input = block.input as {
-            flow_id: string;
-            intro_message: string;
-          };
-          const flow = getFlowById(input.flow_id);
+    // Process tool calls
+    if (message.tool_calls) {
+      for (const toolCall of message.tool_calls) {
+        if (toolCall.type !== "function") continue;
+        guidedSomething = true;
+        const args = JSON.parse(toolCall.function.arguments);
+
+        if (toolCall.function.name === "guide_flow") {
+          const flow = getFlowById(args.flow_id);
 
           if (flow) {
-            textParts.push(input.intro_message);
+            textParts.push(args.intro_message);
             sendToAgent({ type: "flow-start", flow });
           } else {
             textParts.push(
-              `I wanted to show you a guide for that, but the flow "${input.flow_id}" isn't available yet. Let me explain instead.`
+              `I wanted to show you a guide for that, but the flow "${args.flow_id}" isn't available yet. Let me explain instead.`
             );
           }
-        } else if (block.name === "execute_actions") {
-          const input = block.input as {
-            actions: Array<Record<string, unknown>>;
-            explanation: string;
-          };
-
-          textParts.push(input.explanation);
+        } else if (toolCall.function.name === "execute_actions") {
+          textParts.push(args.explanation);
 
           // Execute actions sequentially via the agent
-          for (const action of input.actions) {
+          for (const action of args.actions) {
             sendToAgent({
               type: "execute",
-              command: action as WSMessageToAgent extends { type: "execute"; command: infer C } ? C : never,
+              command: action as AgentCommand,
             });
             // Small delay between commands so they're visible
             await new Promise((r) => setTimeout(r, 1000));
@@ -210,7 +221,7 @@ export async function handleChat(
         "I'm here to help! Ask me anything about OpenEvent, or say 'show me' to get a guided walkthrough of any feature.",
     };
   } catch (err) {
-    console.error("[brain] Error calling Claude:", err);
+    console.error("[brain] Error calling OpenAI:", err);
     return {
       text: "I'm having trouble connecting right now. Please try again in a moment.",
     };
