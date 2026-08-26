@@ -15,10 +15,10 @@ let spotlightEl: HTMLDivElement | null = null;
 let subtitleTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function injectStyles(): void {
-  if (document.getElementById("oe-guide-styles")) return;
+  if (document.getElementById("oe-guide-overlay-styles")) return;
 
   const style = document.createElement("style");
-  style.id = "oe-guide-styles";
+  style.id = "oe-guide-overlay-styles";
   style.textContent = `
     #${OVERLAY_ID} {
       position: fixed;
@@ -30,7 +30,7 @@ function injectStyles(): void {
 
     #${SUBTITLE_ID} {
       position: fixed;
-      bottom: 100px;
+      bottom: 24px;
       left: 50%;
       transform: translateX(-50%);
       max-width: 600px;
@@ -250,7 +250,7 @@ export function destroyOverlay(): void {
   highlightEl?.remove();
   spotlightEl?.remove();
   document.querySelector(".oe-guide-step-badge")?.remove();
-  document.getElementById("oe-guide-styles")?.remove();
+  document.getElementById("oe-guide-overlay-styles")?.remove();
   overlayRoot = null;
   subtitleEl = null;
   highlightEl = null;

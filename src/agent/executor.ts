@@ -128,11 +128,18 @@ export async function executeCommand(command: AgentCommand): Promise<void> {
 
   switch (command.type) {
     case "navigate": {
-      // Use the app's router by pushing to history
       const currentPath = window.location.pathname;
       if (currentPath !== command.path) {
-        window.history.pushState({}, "", command.path);
-        window.dispatchEvent(new PopStateEvent("popstate"));
+        // Try clicking the sidebar link first (works with React Router)
+        const link = document.querySelector(
+          `a[href="${command.path}"], a[href*="${command.path}"]`
+        ) as HTMLAnchorElement | null;
+        if (link) {
+          link.click();
+        } else {
+          // Fallback: direct navigation
+          window.location.href = command.path;
+        }
         await waitForNavigation();
       }
       break;
