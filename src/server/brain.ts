@@ -13,7 +13,20 @@ import { getAllFlows, getFlowById } from "../flows/registry.js";
 import { KNOWLEDGE_BASE } from "../flows/knowledge.js";
 import type { AgentCommand, WSMessageToAgent } from "../shared/types.js";
 
-const openai = new OpenAI();
+/** Lazy-init so the server starts even without OPENAI_API_KEY set */
+let _openai: OpenAI | null = null;
+function getClient(): OpenAI {
+  if (!_openai) {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) {
+      throw new Error(
+        "OPENAI_API_KEY is not set. Add it to .env in the openevent-guide directory."
+      );
+    }
+    _openai = new OpenAI({ apiKey: key });
+  }
+  return _openai;
+}
 
 const SYSTEM_PROMPT = `You are the OpenEvent Guide, an AI assistant built into the OpenEvent platform.
 You help venue managers, event organizers, and club owners learn how to use OpenEvent.
@@ -149,7 +162,7 @@ export async function handleChat(
   agentConnected: boolean
 ): Promise<BrainResponse> {
   try {
-    const response = await openai.chat.completions.create({
+    const response = await getClient().chat.completions.create({
       model: "gpt-4o",
       max_tokens: 1024,
       messages: [

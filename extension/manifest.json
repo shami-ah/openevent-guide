@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "OpenEvent Guide",
+  "version": "1.0.0",
+  "description": "AI onboarding assistant for OpenEvent",
+  "permissions": [],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://app.openevent.io/*",
+        "https://app.test.openevent.io/*",
+        "https://app.play.openevent.io/*",
+        "http://localhost:5173/*"
+      ],
+      "js": ["inject.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icon.png"
+  }
+}
