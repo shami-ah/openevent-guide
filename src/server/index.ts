@@ -102,6 +102,40 @@ app.post("/api/chat", async (c) => {
   });
 });
 
+// ── Voice session (ephemeral token for OpenAI Realtime) ───────────
+app.post("/api/voice-session", async (c) => {
+  const { sessionId } = await c.req.json<{ sessionId: string }>();
+  getSession(sessionId); // ensure session exists
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return c.json({ error: "OPENAI_API_KEY not configured" }, 500);
+  }
+
+  // Create an ephemeral token so the browser can connect directly to OpenAI
+  // without exposing our API key
+  const res = await fetch("https://api.openai.com/v1/realtime/sessions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-realtime-preview",
+      voice: "verse",
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error("[voice] Token creation failed:", err);
+    return c.json({ error: "Failed to create voice session" }, 502);
+  }
+
+  const data = await res.json();
+  return c.json({ clientSecret: data.client_secret?.value ?? data.client_secret });
+});
+
 // ── Cleanup ───────────────────────────────────────────────────────
 setInterval(() => {
   const cutoff = Date.now() - 60 * 60 * 1000;
@@ -116,6 +150,7 @@ serve({ fetch: app.fetch, port: PORT }, () => {
   console.log(`  ─────────────────────`);
   console.log(`  http://localhost:${PORT}`);
   console.log(`  GET  /sdk.js     (the SDK bundle)`);
-  console.log(`  POST /api/chat   (chat endpoint)`);
-  console.log(`  GET  /health     (healthcheck)\n`);
+  console.log(`  POST /api/chat          (chat endpoint)`);
+  console.log(`  POST /api/voice-session (voice token)`);
+  console.log(`  GET  /health            (healthcheck)\n`);
 });
