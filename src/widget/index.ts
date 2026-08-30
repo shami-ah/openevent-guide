@@ -23,7 +23,7 @@ const state: WidgetState = {
   messages: [],
   typing: false,
   sessionId: crypto.randomUUID(),
-  serverUrl: "http://localhost:3847",
+  serverUrl: "",
 };
 
 // ── Styles ────────────────────────────────────────────────────────
@@ -189,7 +189,20 @@ function init(): void {
   const config = (window as unknown as Record<string, unknown>).__oeGuideConfig as
     | { server?: string }
     | undefined;
-  if (config?.server) state.serverUrl = config.server;
+  if (config?.server) {
+    state.serverUrl = config.server;
+  } else {
+    for (const s of document.querySelectorAll("script[src]")) {
+      const src = (s as HTMLScriptElement).src;
+      if (src.includes("/widget.js") || src.includes("/widget.iife.js")) {
+        const url = new URL(src);
+        const dir = url.pathname.replace(/\/widget(\.iife)?\.js$/, "");
+        state.serverUrl = url.origin + (dir === "/" ? "" : dir);
+        break;
+      }
+    }
+    if (!state.serverUrl) state.serverUrl = window.location.origin;
+  }
   render();
 }
 

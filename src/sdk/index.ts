@@ -441,6 +441,49 @@ async function executeFlow(commands: Array<Record<string, unknown>>): Promise<vo
 function cancelFlow(): void { state.runningCancel = true; clearHighlight(); hideSubtitle(); hideStepBadge(); }
 function addStatus(text: string): void { state.messages.push({ role: "status", content: text }); render(); }
 
+// ── API fetch (direct or via extension proxy) ────────────────────
+
+let _reqCounter = 0;
+
+function apiFetch(url: string, options: RequestInit): Promise<Record<string, unknown>> {
+  const useProxy = (window as unknown as Record<string, unknown>).__oeGuideExtProxy;
+
+  if (useProxy) {
+    // Route through extension service worker to bypass CSP connect-src
+    return new Promise((resolve, reject) => {
+      const reqId = "oeg-" + (++_reqCounter);
+
+      const handler = (event: MessageEvent) => {
+        if (event.data?.source !== "oeg-ext" || event.data?.reqId !== reqId) return;
+        window.removeEventListener("message", handler);
+        if (event.data.response?.ok) resolve(event.data.response.data);
+        else reject(new Error(event.data.response?.error ?? "Extension proxy failed"));
+      };
+      window.addEventListener("message", handler);
+
+      window.postMessage({
+        source: "oeg-sdk",
+        type: "api-request",
+        reqId,
+        url,
+        options: { method: options.method, headers: options.headers, body: options.body },
+      }, "*");
+
+      // Timeout after 30s
+      setTimeout(() => {
+        window.removeEventListener("message", handler);
+        reject(new Error("Request timed out"));
+      }, 30000);
+    });
+  }
+
+  // Direct fetch (when SDK is loaded via script tag, no CSP issues)
+  return fetch(url, options).then((res) => {
+    if (!res.ok) throw new Error(`${res.status}`);
+    return res.json();
+  });
+}
+
 // ── Chat ──────────────────────────────────────────────────────────
 
 async function sendMessage(): Promise<void> {
@@ -449,20 +492,17 @@ async function sendMessage(): Promise<void> {
   const content = input.value.trim(); input.value = "";
   state.messages.push({ role: "user", content }); state.typing = true; render();
   try {
-    const res = await fetch(`${state.serverUrl}/api/chat`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+    const data = await apiFetch(`${state.serverUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: state.sessionId, message: content, user: state.user }),
-    });
-    if (!res.ok) throw new Error(`${res.status}`);
-    const data = await res.json();
+    }) as { reply: string; commands?: Array<Record<string, unknown>> };
     state.messages.push({ role: "assistant", content: data.reply }); state.typing = false; render();
-    if (data.commands?.length > 0) await executeFlow(data.commands);
+    if (data.commands?.length) await executeFlow(data.commands);
   } catch (err) {
     state.typing = false;
-    const url = `${state.serverUrl}/api/chat`;
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[oe-guide] Chat failed:", url, err);
-    state.messages.push({ role: "assistant", content: `Could not reach ${url} (${errMsg})` }); render();
+    console.error("[oe-guide] Chat failed:", err);
+    state.messages.push({ role: "assistant", content: "Connection issue. Please try again." }); render();
   }
 }
 
