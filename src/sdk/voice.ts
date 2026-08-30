@@ -95,12 +95,20 @@ const VOICE_TOOLS = [
 
 // ── Session creation ──────────────────────────────────────────────
 
-async function getEphemeralToken(serverUrl: string, sessionId: string): Promise<string> {
-  const res = await fetch(`${serverUrl}/api/voice-session`, {
+async function getEphemeralToken(serverUrl: string, sessionId: string, apiFetchFn?: (url: string, opts: RequestInit) => Promise<Record<string, unknown>>): Promise<string> {
+  const url = `${serverUrl}/api/voice-session`;
+  const opts: RequestInit = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId }),
-  });
+  };
+
+  if (apiFetchFn) {
+    const data = await apiFetchFn(url, opts);
+    return (data as { clientSecret: string }).clientSecret;
+  }
+
+  const res = await fetch(url, opts);
   if (!res.ok) throw new Error(`Voice session failed: ${res.status}`);
   const data = await res.json();
   return data.clientSecret;
@@ -116,7 +124,8 @@ export async function startVoice(
     onToolCall: (cmd: AgentCommand) => Promise<void>;
     onTranscript: (text: string, role: "user" | "assistant") => void;
     onStateChange: (active: boolean) => void;
-  }
+  },
+  apiFetchFn?: (url: string, opts: RequestInit) => Promise<Record<string, unknown>>
 ): Promise<void> {
   if (vs.active) return;
 
@@ -126,7 +135,7 @@ export async function startVoice(
 
   try {
     // 1. Get ephemeral token from our server
-    const token = await getEphemeralToken(serverUrl, sessionId);
+    const token = await getEphemeralToken(serverUrl, sessionId, apiFetchFn);
 
     // 2. Create peer connection
     const pc = new RTCPeerConnection();

@@ -130,40 +130,77 @@ export async function executeCommand(command: AgentCommand): Promise<void> {
     case "navigate": {
       const currentPath = window.location.pathname;
       if (currentPath !== command.path) {
-        // Try clicking the sidebar link first (works with React Router)
-        const link = document.querySelector(
-          `a[href="${command.path}"], a[href*="${command.path}"]`
-        ) as HTMLAnchorElement | null;
-        if (link) {
-          link.click();
-        } else {
+        // Try clicking sidebar links (works with React Router)
+        const selectors = [
+          `a[href="${command.path}"]`,
+          `a[href$="${command.path}"]`,
+          `nav a[href*="${command.path.split("/").pop()}"]`,
+        ];
+        let clicked = false;
+        for (const sel of selectors) {
+          const link = document.querySelector(sel) as HTMLAnchorElement | null;
+          if (link) {
+            link.click();
+            clicked = true;
+            break;
+          }
+        }
+        if (!clicked) {
           // Fallback: direct navigation
           window.location.href = command.path;
         }
         await waitForNavigation();
+        // Extra settle time for React to render
+        await new Promise((r) => setTimeout(r, 1000));
       }
       break;
     }
 
     case "highlight": {
-      const el = await waitForElement(command.selector);
-      if (el) {
-        highlightElement(command.selector, command.duration);
-      } else {
-        console.warn(`[oe-guide] Could not find element: ${command.selector}`);
+      // Try each selector in a comma-separated list
+      const selectors = command.selector.split(",").map((s) => s.trim());
+      let found = false;
+      for (const sel of selectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            highlightElement(sel, command.duration);
+            found = true;
+            break;
+          }
+        } catch { /* invalid selector, skip */ }
+      }
+      if (!found) {
+        // Wait and retry once (element might be loading)
+        await new Promise((r) => setTimeout(r, 1500));
+        for (const sel of selectors) {
+          try {
+            const el = document.querySelector(sel);
+            if (el) { highlightElement(sel, command.duration); break; }
+          } catch { /* skip */ }
+        }
       }
       break;
     }
 
     case "click": {
       clearHighlight();
-      const el = await waitForElement(command.selector);
-      if (el) {
-        highlightElement(command.selector);
-        await new Promise((r) => setTimeout(r, 800)); // Let user see the highlight
-        await simulateClick(el);
+      // Try each selector
+      const clickSelectors = command.selector.split(",").map((s) => s.trim());
+      let clickEl: Element | null = null;
+      let clickSel = "";
+      for (const sel of clickSelectors) {
+        try {
+          clickEl = await waitForElement(sel, 3000);
+          if (clickEl) { clickSel = sel; break; }
+        } catch { /* skip */ }
+      }
+      if (clickEl) {
+        highlightElement(clickSel);
+        await new Promise((r) => setTimeout(r, 1200));
+        await simulateClick(clickEl);
         clearHighlight();
-        await new Promise((r) => setTimeout(r, 300)); // Let the click effect settle
+        await new Promise((r) => setTimeout(r, 500));
       } else {
         console.warn(`[oe-guide] Could not find element to click: ${command.selector}`);
       }

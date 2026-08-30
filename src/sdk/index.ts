@@ -393,7 +393,8 @@ async function startCall(): Promise<void> {
         onToolCall: async (cmd) => { await executeCommand(cmd); },
         onTranscript: (text, role) => { state.messages.push({ role: role === "user" ? "user" : "assistant", content: text }); },
         onStateChange: (active) => { state.voiceActive = active; render(); },
-      }
+      },
+      apiFetch
     );
     state.voiceActive = true;
     localStorage.setItem("oe-guide-seen", "1");
@@ -420,25 +421,70 @@ function endCall(): void {
 
 // ── Flow execution ────────────────────────────────────────────────
 
+/** Cancellable sleep - resolves immediately if cancelled */
+function cancellableSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const check = setInterval(() => {
+      if (state.runningCancel) { clearInterval(check); resolve(); }
+    }, 100);
+    setTimeout(() => { clearInterval(check); resolve(); }, ms);
+  });
+}
+
 async function executeFlow(commands: Array<Record<string, unknown>>): Promise<void> {
-  state.running = true; state.runningCancel = false; render();
+  state.running = true;
+  state.runningCancel = false;
+  render();
+
   const total = commands.length;
   for (let i = 0; i < commands.length; i++) {
     if (state.runningCancel) break;
+
     const cmd = commands[i] as import("../shared/types.js").AgentCommand;
+
+    // Step badge
     if (total > 2) showStepBadge(i + 1, total);
-    if (cmd.type === "navigate" && "path" in cmd) addStatus(`Navigating to ${(cmd as { path: string }).path}...`);
-    else if ("subtitle" in cmd && cmd.subtitle) addStatus(cmd.subtitle as string);
+
+    // Status message in chat
+    if (cmd.type === "subtitle" && "text" in cmd) {
+      addStatus((cmd as { text: string }).text);
+    } else if ("subtitle" in cmd && cmd.subtitle) {
+      addStatus(cmd.subtitle as string);
+    } else if (cmd.type === "navigate" && "path" in cmd) {
+      addStatus(`Navigating to ${(cmd as { path: string }).path}...`);
+    }
+
+    // Execute the command
     await executeCommand(cmd);
-    await new Promise((r) => setTimeout(r, 500));
+    if (state.runningCancel) break;
+
+    // Pause between steps so user can read/see what happened
+    // Longer pause for navigation (page needs to load) and subtitles (need to read)
+    const pauseMs = cmd.type === "navigate" ? 3000
+      : cmd.type === "subtitle" ? (cmd as { duration?: number }).duration ?? 4000
+      : cmd.type === "highlight" ? (cmd as { duration?: number }).duration ?? 3000
+      : 2000;
+
+    await cancellableSleep(pauseMs);
   }
-  hideStepBadge(); clearHighlight(); hideSubtitle();
+
+  // Always clean up, even if cancelled
+  hideStepBadge();
+  clearHighlight();
+  hideSubtitle();
   state.running = false;
   addStatus(state.runningCancel ? "Guide stopped." : "Done! Ask me anything else.");
   render();
 }
 
-function cancelFlow(): void { state.runningCancel = true; clearHighlight(); hideSubtitle(); hideStepBadge(); }
+function cancelFlow(): void {
+  state.runningCancel = true;
+  state.running = false;
+  clearHighlight();
+  hideSubtitle();
+  hideStepBadge();
+  render(); // immediately re-enable input
+}
 function addStatus(text: string): void { state.messages.push({ role: "status", content: text }); render(); }
 
 // ── API fetch (direct or via extension proxy) ────────────────────
@@ -498,7 +544,14 @@ async function sendMessage(): Promise<void> {
       body: JSON.stringify({ sessionId: state.sessionId, message: content, user: state.user }),
     }) as { reply: string; commands?: Array<Record<string, unknown>> };
     state.messages.push({ role: "assistant", content: data.reply }); state.typing = false; render();
-    if (data.commands?.length) await executeFlow(data.commands);
+    if (data.commands?.length) {
+      try { await executeFlow(data.commands); } catch (flowErr) {
+        console.error("[oe-guide] Flow error:", flowErr);
+        state.running = false;
+        addStatus("The guide ran into an issue on this page. Try asking again.");
+        render();
+      }
+    }
   } catch (err) {
     state.typing = false;
     console.error("[oe-guide] Chat failed:", err);
