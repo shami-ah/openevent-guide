@@ -31,49 +31,67 @@ function getClient(): OpenAI {
 const SYSTEM_PROMPT = `You are the OpenEvent Guide, an AI assistant built into the OpenEvent platform.
 You help venue managers, event organizers, and club owners learn how to use OpenEvent.
 
-Your users are typically:
-- Non-technical venue managers running clubs, bars, restaurants, or event spaces
-- Event organizers managing ticketing, guest lists, and seating
-- Business owners setting up memberships, POS, and marketing
+Your users are non-technical venue managers, event organizers, and club owners.
+Communicate in a friendly, clear way. Use simple language. No developer jargon.
+Speak the user's language (detect from their message - English, German, French).
 
-You communicate in a friendly, clear, professional way. Use simple language.
-Never use developer jargon. Think of yourself as a knowledgeable colleague.
+## CRITICAL RULES
 
-## What you can do
+1. **ALWAYS use guide_flow** when the user asks "how do I...", "show me...", "where is...".
+   NEVER use execute_actions. The predefined flows have tested, working selectors.
+   execute_actions uses CSS selectors that will fail on the real app.
 
-1. **Answer questions** about any OpenEvent feature - explain what it does, how it works, tips
-2. **Guide users** through features by controlling their browser - navigate to pages, highlight buttons, click things, fill in fields, all with explanatory subtitles
-3. **Suggest next steps** based on what the user is trying to accomplish
+2. If no predefined flow matches, answer with text only. Do NOT try to generate
+   custom browser actions - they will break because you don't know the real DOM.
 
-## Important rules
+3. Keep text responses short (2-3 sentences). After answering, suggest a related flow.
 
-- When a user asks "how do I..." or "show me..." or "where is...", PREFER guiding them through it (use the guide_flow or execute_actions tools) over just explaining
-- When a user asks "what is..." or "explain...", answer with text
-- Keep text responses short and actionable (2-3 sentences max, then offer to show)
-- If a predefined flow exists for what they're asking, use guide_flow
-- If no predefined flow exists but you can navigate them, use execute_actions
-- Always offer to continue helping after completing a guide
-- Speak the user's language (detect from their message - English, German, French)
+4. When the user says "yes", "sure", "please", "show me" after you described something,
+   find the matching guide_flow and trigger it. Don't repeat the explanation.
+
+## Sidebar Navigation (exact selectors - DO NOT use any other selectors)
+
+| Page | Sidebar link | Route |
+|------|-------------|-------|
+| Calendar | a[href="/calendar"] | /calendar |
+| Email | a[href="/email"] | /email |
+| Payments | a[href="/payments"] | /payments |
+| Ticketing | a[href="/ticketing"] | /ticketing |
+| POS | a[href="/pos"] | /pos |
+| Members | a[href="/membership"] | /membership |
+| Website | a[href="/website"] | /website |
+| Audience | a[href="/audience"] | /audience |
+| Staff | a[href="/staff"] | /staff |
+| Reports | a[href="/reports"] | /reports |
+| Files | a[href="/files"] | /files |
+| Tasks | a[href="/tasks"] | /tasks |
+| Notes | a[href="/notes"] | /notes |
+| Settings | a[href="/settings"] | /settings |
+
+There is NO a[href="/events"] link. Events are at /calendar.
+There are NO data-guide attributes in the app. Do not use them.
 
 ## OpenEvent Feature Areas
 
 ${KNOWLEDGE_BASE}
 
-## Available Guided Flows
+## Available Guided Flows (use guide_flow tool with these IDs)
 
 ${getAllFlows()
   .map((f) => `- **${f.id}**: ${f.name} - ${f.description} [keywords: ${f.keywords.join(", ")}]`)
   .join("\n")}
+
+REMEMBER: ALWAYS use guide_flow, NEVER use execute_actions.
 `;
 
-/** Tools the LLM can call */
+/** Only guide_flow - no execute_actions (those use wrong selectors) */
 const TOOLS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
       name: "guide_flow",
       description:
-        "Start a predefined guided walkthrough. Use this when a user asks how to do something and a matching flow exists. The flow will navigate their browser, highlight elements, and show subtitles explaining each step.",
+        "Start a predefined guided walkthrough. ALWAYS use this when a user asks how to do something. The flow navigates their browser, highlights elements, and shows subtitles. Never generate custom actions.",
       parameters: {
         type: "object",
         properties: {
@@ -83,70 +101,10 @@ const TOOLS: ChatCompletionTool[] = [
           },
           intro_message: {
             type: "string",
-            description:
-              "A brief message to show the user before starting the guide (1-2 sentences)",
+            description: "A brief message to show the user before starting the guide (1-2 sentences)",
           },
         },
         required: ["flow_id", "intro_message"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "execute_actions",
-      description:
-        "Execute custom browser actions when no predefined flow matches. Use this to navigate to a specific page, highlight a specific element, or perform a custom sequence of actions to help the user.",
-      parameters: {
-        type: "object",
-        properties: {
-          actions: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                type: {
-                  type: "string",
-                  enum: [
-                    "navigate",
-                    "highlight",
-                    "click",
-                    "fill",
-                    "scroll",
-                    "subtitle",
-                    "wait",
-                  ],
-                },
-                path: { type: "string", description: "For navigate: the URL path" },
-                selector: {
-                  type: "string",
-                  description: "CSS selector for highlight/click/fill/scroll",
-                },
-                value: { type: "string", description: "For fill: the value to type" },
-                text: { type: "string", description: "For subtitle: the text to show" },
-                subtitle: {
-                  type: "string",
-                  description: "Subtitle to show during this action",
-                },
-                ms: {
-                  type: "number",
-                  description: "For wait: milliseconds to wait",
-                },
-                duration: {
-                  type: "number",
-                  description: "For highlight/subtitle: how long to show (ms)",
-                },
-              },
-              required: ["type"],
-            },
-            description: "Array of browser actions to execute in sequence",
-          },
-          explanation: {
-            type: "string",
-            description: "Brief explanation of what you're about to show the user",
-          },
-        },
-        required: ["actions", "explanation"],
       },
     },
   },
@@ -207,18 +165,8 @@ export async function handleChat(
               `I wanted to show you a guide for that, but the flow "${args.flow_id}" isn't available yet. Let me explain instead.`
             );
           }
-        } else if (toolCall.function.name === "execute_actions") {
-          textParts.push(args.explanation);
-
-          // Execute actions sequentially via the agent
-          for (const action of args.actions) {
-            sendToAgent({
-              type: "execute",
-              command: action as AgentCommand,
-            });
-            // Small delay between commands so they're visible
-            await new Promise((r) => setTimeout(r, 1000));
-          }
+        } else {
+          // Unknown tool call - ignore
         }
       }
     }
