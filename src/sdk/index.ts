@@ -66,7 +66,11 @@ const state: GuideState = {
 function detectServerUrl(): string {
   for (const s of document.querySelectorAll("script[src]")) {
     const src = (s as HTMLScriptElement).src;
-    if (src.includes("/sdk.js") || src.includes("/sdk.iife.js")) return new URL(src).origin;
+    if (src.includes("/sdk.js") || src.includes("/sdk.iife.js")) {
+      const url = new URL(src);
+      const dir = url.pathname.replace(/\/sdk(\.iife)?\.js$/, "");
+      return url.origin + (dir === "/" ? "" : dir);
+    }
   }
   return window.location.origin;
 }
@@ -453,9 +457,12 @@ async function sendMessage(): Promise<void> {
     const data = await res.json();
     state.messages.push({ role: "assistant", content: data.reply }); state.typing = false; render();
     if (data.commands?.length > 0) await executeFlow(data.commands);
-  } catch {
+  } catch (err) {
     state.typing = false;
-    state.messages.push({ role: "assistant", content: "Connection issue. Please try again." }); render();
+    const url = `${state.serverUrl}/api/chat`;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[oe-guide] Chat failed:", url, err);
+    state.messages.push({ role: "assistant", content: `Could not reach ${url} (${errMsg})` }); render();
   }
 }
 
