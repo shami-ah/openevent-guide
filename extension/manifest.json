@@ -1,27 +1,29 @@
 {
   "manifest_version": 3,
   "name": "OpenEvent Guide",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "AI onboarding assistant for OpenEvent",
-  "permissions": [],
+  "permissions": ["scripting", "activeTab"],
   "host_permissions": [
-    "http://localhost:3847/*"
+    "https://app.openevent.io/*",
+    "https://app.test.openevent.io/*",
+    "https://app.play.openevent.io/*",
+    "https://ahtesham.dev.wadwarehouse.com/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
         "https://app.openevent.io/*",
         "https://app.test.openevent.io/*",
-        "https://app.play.openevent.io/*",
-        "http://localhost:5173/*"
+        "https://app.play.openevent.io/*"
       ],
-      "js": ["inject.js"],
+      "js": ["loader.js"],
       "run_at": "document_idle"
     }
   ],
-  "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
-  },
   "icons": {
     "48": "icon.png"
   }
