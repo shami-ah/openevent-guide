@@ -1,39 +1,26 @@
 /**
- * Service worker: fetches the SDK from the guide server and injects it
- * into the page using chrome.scripting.executeScript, which bypasses CSP.
+ * Service worker: injects the SDK + boot script into OpenEvent pages.
+ * Uses chrome.scripting.executeScript with files (bypasses CSP completely).
  */
 
 var SERVER = "https://ahtesham.dev.wadwarehouse.com/guide";
-var sdkCache = null;
 
-// Fetch and cache the SDK code
-async function fetchSDK() {
-  if (sdkCache) return sdkCache;
-  var res = await fetch(SERVER + "/sdk.js");
-  if (!res.ok) throw new Error("SDK fetch failed: " + res.status);
-  sdkCache = await res.text();
-  return sdkCache;
-}
-
-// Listen for injection requests from content scripts
 chrome.runtime.onMessage.addListener(function (msg, sender) {
   if (msg.type !== "inject-sdk" || !sender.tab) return;
 
   var tabId = sender.tab.id;
 
-  fetchSDK().then(function (sdkCode) {
-    // Inject the SDK code directly into the page
+  // Step 1: inject the SDK (bundled in the extension, CSP-immune)
+  chrome.scripting.executeScript({
+    target: { tabId: tabId },
+    world: "MAIN",
+    files: ["sdk.js"]
+  }).then(function () {
+    // Step 2: boot the SDK with user info
     chrome.scripting.executeScript({
       target: { tabId: tabId },
       world: "MAIN",
-      func: function (code, server) {
-        // Execute the SDK
-        var script = document.createElement("script");
-        script.textContent = code;
-        document.head.appendChild(script);
-        script.remove();
-
-        // Boot with user info from Supabase auth
+      func: function (server) {
         var user = { user_id: "demo", name: "User" };
         try {
           var keys = [
@@ -67,9 +54,9 @@ chrome.runtime.onMessage.addListener(function (msg, sender) {
           });
         }
       },
-      args: [sdkCode, SERVER]
+      args: [SERVER]
     });
   }).catch(function (err) {
-    console.error("[OpenEvent Guide] SDK injection failed:", err);
+    console.error("[OpenEvent Guide] Injection failed:", err);
   });
 });

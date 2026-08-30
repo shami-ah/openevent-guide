@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server/index.ts",
     "build": "npm run build:sdk && npm run build:server",
-    "build:sdk": "vite build --config vite.sdk.config.ts",
+    "build:sdk": "vite build --config vite.sdk.config.ts && cp dist/sdk/sdk.iife.js extension/sdk.js",
     "build:server": "tsup src/server/index.ts --format esm --out-dir dist/server",
     "typecheck": "tsc --noEmit"
   },
