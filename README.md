@@ -1,108 +1,160 @@
 # OpenEvent Guide
 
-AI-powered interactive onboarding for OpenEvent. Users chat with the guide, and it controls their browser - navigating, highlighting, clicking, and explaining with subtitles.
+An AI onboarding assistant that lives inside OpenEvent. Users ask a question in
+plain language; the guide answers, and where it helps, drives their browser :
+navigating, highlighting the right control, and narrating each step on screen.
 
 ## Architecture
 
 ```
-┌─────────────┐     WebSocket      ┌──────────────┐     WebSocket      ┌──────────────┐
-│  Chat Widget │ ◄──────────────── │    Server     │ ──────────────►  │ Browser Agent │
-│  (floating)  │     messages      │  (brain +     │     commands     │ (DOM control) │
-│              │                   │   routing)    │                   │              │
-└─────────────┘                    └──────┬───────┘                    └──────────────┘
-                                          │
-                                    Claude API
-                                  (function calling)
+┌──────────────────────────────┐        HTTPS         ┌────────────────────┐
+│  SDK (runs in the OpenEvent  │ ───────────────────► │   Guide server     │
+│  page: chat UI, overlay,     │   POST /api/chat     │   (Hono + OpenAI)  │
+│  command executor)           │ ◄─────────────────── │                    │
+└──────────────┬───────────────┘   reply + commands   └────────────────────┘
+               │
+               │ executes against the real DOM
+               ▼
+      navigate · highlight · click · fill · scroll · subtitle
 ```
 
-**Layer 1 - Brain:** Claude with OpenEvent product knowledge + function calling. Routes questions to either text answers or guided browser flows.
+**The brain** (`src/server/brain.ts`) runs the chat model with the product
+knowledge base and the flow list. It can answer in words, or trigger a
+predefined flow. It cannot invent CSS selectors, because it cannot see the page
+and every selector it invented was wrong.
 
-**Layer 3 - Browser Agent:** Injectable script that receives commands via WebSocket and executes them in the user's real browser (navigate, highlight, click, fill, scroll) with visual overlays and subtitles.
+**Flows** (`src/flows/registry.ts`) are short scripted walkthroughs, authored in
+EN, DE and FR. Every navigation target is checked against a route manifest and
+every element target against a selector registry.
 
-**Layer 2 - Voice (future):** OpenAI Realtime API for voice conversation. Architecture is ready - just needs the voice transport layer.
+**The executor** (`src/agent/executor.ts`) runs commands in the page. It
+navigates through the History API so the SPA is never reloaded, and reports
+honestly when an element is not on screen.
 
-## Quick Start
+**Voice** (`src/sdk/voice.ts`) is the same guide over a live WebRTC call. It
+runs the same flows the chat side runs. See
+[docs/voice-call-fix.md](docs/voice-call-fix.md) for its current deployment
+blocker.
+
+## Quick start
 
 ```bash
-# Install dependencies
 npm install
-
-# Set up your API key
-cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
-
-# Build the injectable scripts
-npm run build:widget
-npm run build:agent
-
-# Start the server
-npm run dev
-
-# Open http://localhost:3847 for the demo page
+cp .env.example .env          # add your OPENAI_API_KEY
+npm run build:sdk             # build the injectable bundle
+npm run dev                   # server on http://localhost:3847
 ```
 
-## Inject into OpenEvent
+Open <http://localhost:3847> for the demo page.
 
-### Option 1: Bookmarklet
-Visit http://localhost:3847, drag the "OpenEvent Guide" button to your bookmarks bar, then click it while on app.openevent.io.
+## Verifying a change
 
-### Option 2: Script tags
+```bash
+npm run verify        # typecheck + tests
+npm run test:watch    # while working
+```
+
+The test suite exists because of bugs that reached users. It asserts that every
+flow navigates to a route the app actually has, that every selector is valid
+CSS, that no selector matches on visible text (which would break in DE and FR),
+and that navigation uses the History API rather than reloading the page. See
+`src/flows/registry.test.ts` and `src/agent/executor.test.ts`.
+
+## Installing into OpenEvent
+
+### Production: a script tag from the app's own origin
+
+Proxy `/guide/` through OpenEvent's nginx to this server, then:
+
 ```html
-<script src="http://localhost:3847/agent.js" data-guide-server="ws://localhost:3847"></script>
-<script src="http://localhost:3847/widget.js" data-guide-server="http://localhost:3847"></script>
+<script src="/guide/sdk.js" defer></script>
+<script>
+  window.addEventListener("load", function () {
+    window.OpenEventGuide.boot({
+      user_id: currentUser.id,
+      name: currentUser.name,
+      language: i18n.language,   // "en" | "de" | "fr"
+      server: "/guide",
+    });
+  });
+</script>
 ```
 
-## Feature Coverage
+Because everything is same-origin, OpenEvent's CSP needs no changes at all.
+Full instructions in [docs/voice-call-fix.md](docs/voice-call-fix.md) §4.
 
-The guide covers every major OpenEvent feature:
-- Getting Started tour
-- Events (create, manage)
-- Ticketing (categories, links, split payments)
-- Membership (plans, members, app)
-- POS (outlets, products, payments)
-- Marketing (campaigns, automations)
-- Settings (business, Stripe, rooms, staff, taxes)
-- Floor plans (seating charts)
-- Website Builder
-- Reports & Analytics
-- CRM, Scanner, Calendar
+### Development: the Chrome extension
 
-## How Flows Work
+`extension/` injects the SDK into OpenEvent without touching its deployment. It
+exists to work around two page restrictions: `script-src 'self'` (worked around
+with `chrome.scripting`) and `connect-src` (worked around by proxying fetches
+through the service worker).
 
-Each feature has a predefined `Flow` - a sequence of browser commands with subtitles:
+```bash
+npm run build:sdk                    # refreshes extension/sdk.js
+# chrome://extensions -> Developer mode -> Load unpacked -> extension/
+```
 
-```typescript
+`extension/sdk.js` is a build artifact. Run `npm run build:sdk` after any SDK
+change or the extension will keep injecting a stale bundle;
+`npm run check:bundle` fails if it has drifted.
+
+## Configuration
+
+`boot()` options:
+
+| Option | Purpose |
+|---|---|
+| `user_id`, `name`, `email`, `team` | Who the guide is talking to. Reaches the model, so it can greet by name. |
+| `language` | `en`, `de` or `fr`. Selects flow copy and the model's reply language. |
+| `server` | Guide server base URL. Auto-detected from the script tag if omitted. |
+| `token` | Shared secret, when the server runs with `GUIDE_API_TOKEN`. |
+| `disableVoice` | Chat only. Voice is also disabled automatically when the microphone is blocked. |
+| `disableTriggers` | Turn off proactive help offers. |
+
+Server configuration lives in `.env`; see `.env.example`.
+
+`window.OpenEventGuide.diagnostics()` reports whether voice is available and,
+when it is not, exactly why.
+
+## Adding a flow
+
+Flows are authored in `src/flows/registry.ts`:
+
+```ts
 {
   id: "create-ticket-link",
-  name: "Create a Ticket Link",
+  name: { en: "Create a Ticket Link", de: "Ticketlink erstellen", fr: "Creer un lien" },
+  description: { en: "...", de: "...", fr: "..." },
+  area: "ticketing",
+  keywords: ["ticket link", "ticketlink", "lien billet"],
   steps: [
-    { action: "navigate", path: "/ticketing", subtitle: "Let's go to Ticketing" },
-    { action: "highlight", selector: "button:has-text('Create')", subtitle: "Click here to create a new link" },
-    { action: "click", selector: "button:has-text('Create')" },
-    // ...
-  ]
+    { description: { en: "Let me take you to Ticketing.", de: "...", fr: "..." },
+      command: { type: "navigate", path: "/ticketing" } },
+    { description: { en: "This button creates a new link.", de: "...", fr: "..." },
+      command: { type: "highlight", target: "ticketing.createLink", duration: 5000 } },
+  ],
 }
 ```
 
-The brain (Claude) decides which flow to trigger based on the user's question, or generates custom actions on-the-fly for questions that don't match a predefined flow.
+Two rules, both enforced by the tests:
 
-## Adding New Flows
+1. `path` must exist in `src/shared/appRoutes.ts`.
+2. `target` must exist in `src/flows/targets.ts`. Never inline a selector.
 
-Edit `src/flows/registry.ts` to add new guided walkthroughs. Use the `step()` helper:
+Adding a new element target means adding it to `targets.ts` with a stable
+selector. If the app has no stable hook for it, add the entry with
+`needsAppHook: true` and record it in [docs/app-side-hooks.md](docs/app-side-hooks.md).
 
-```typescript
-step("Explanation shown as subtitle", {
-  type: "highlight",       // or navigate, click, fill, scroll, subtitle, wait
-  selector: "[data-guide='my-element']",
-  duration: 5000,
-})
+## Layout
+
 ```
-
-## Preparing for Layer 2 (Voice)
-
-The architecture separates transport from logic:
-- `brain.ts` handles routing (text in, actions + text out)
-- WebSocket handles the transport
-- Voice would add a parallel transport that converts speech-to-text, passes to the brain, and converts text-to-speech for the response
-
-No changes needed to the brain or the agent - just a new voice transport layer.
+src/
+  shared/     types, i18n helpers, the verified route manifest
+  flows/      flow registry, selector targets, product knowledge base
+  server/     Hono server and the chat brain
+  agent/      overlay rendering and the DOM command executor
+  sdk/        widget UI, proactive triggers, voice
+extension/    Chrome extension for development installs
+docs/         deployment and integration notes
+```
