@@ -9,7 +9,11 @@
     "build": "npm run build:sdk && npm run build:server",
     "build:sdk": "vite build --config vite.sdk.config.ts && cp dist/sdk/sdk.iife.js extension/sdk.js",
     "build:server": "tsup src/server/index.ts --format esm --out-dir dist/server",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:bundle": "npm run build:sdk && git diff --exit-code --stat extension/sdk.js",
+    "verify": "npm run typecheck && npm run test"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
@@ -19,9 +23,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "jsdom": "^30.0.1",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^4.1.11"
   }
 }

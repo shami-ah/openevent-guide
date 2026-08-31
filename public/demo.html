@@ -76,8 +76,11 @@
     OpenEventGuide.boot({
       user_id: "demo",
       name: "Demo User",
-      team: "OpenEvent"
+      team: "OpenEvent",
+      language: (navigator.language || "en").slice(0, 2)
     });
+    // Why the call button may be missing here: see docs/voice-call-fix.md
+    console.log("[demo] guide diagnostics:", OpenEventGuide.diagnostics());
   </script>
 </body>
 </html>

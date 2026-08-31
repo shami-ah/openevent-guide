@@ -1,67 +1,93 @@
-// ── Message Types (Widget <-> Server) ──────────────────────────────
+import type { Text } from "./i18n.js";
 
-export interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: number;
-  /** When the assistant triggers a guided flow instead of just text */
-  flow?: FlowExecution;
-}
-
-export interface FlowExecution {
-  flowId: string;
-  flowName: string;
-  steps: FlowStep[];
-  currentStep: number;
-  status: "running" | "paused" | "completed" | "cancelled";
-}
-
-// ── Agent Commands (Server -> Browser Agent) ───────────────────────
+// ── Agent commands (server -> browser) ─────────────────────────────
+// These are the resolved, on-the-wire shape: language already picked,
+// target ids already turned into selectors.
 
 export type AgentCommand =
   | { type: "navigate"; path: string; subtitle?: string }
-  | { type: "highlight"; selector: string; subtitle?: string; duration?: number }
-  | { type: "click"; selector: string; subtitle?: string }
-  | { type: "fill"; selector: string; value: string; subtitle?: string }
-  | { type: "scroll"; selector: string; subtitle?: string }
+  | { type: "highlight"; selector: string; label?: string; subtitle?: string; duration?: number }
+  | { type: "click"; selector: string; label?: string; subtitle?: string }
+  | { type: "fill"; selector: string; label?: string; value: string; subtitle?: string }
+  | { type: "scroll"; selector: string; label?: string; subtitle?: string }
   | { type: "subtitle"; text: string; duration?: number }
   | { type: "wait"; ms: number }
-  | { type: "sequence"; commands: AgentCommand[] }
   | { type: "clear" };
 
-export interface AgentEvent {
-  type: "command" | "flow-start" | "flow-step" | "flow-end" | "error";
-  payload: AgentCommand | FlowStep | { message: string };
+export type AgentCommandType = AgentCommand["type"];
+
+/**
+ * Every command reports whether it actually did anything.
+ *
+ * This used to be void, so a missing element only produced a console.warn
+ * while the subtitle kept confidently saying "click here". Permission-filtered
+ * navigation makes a missing target normal rather than exceptional, so the
+ * user has to be told.
+ */
+export interface CommandResult {
+  ok: boolean;
+  /** Short, user-facing reason. Present only when ok is false. */
+  reason?: string;
+  /** True when the rest of the flow can no longer make sense (bad navigate). */
+  fatal?: boolean;
 }
 
-// ── Flow Definitions ───────────────────────────────────────────────
+// ── Authored flows (localized, server-side) ────────────────────────
+
+export interface FlowStepDef {
+  /** Narration for this step. Doubles as the command's subtitle. */
+  description: Text;
+  command: FlowCommandDef;
+}
+
+/**
+ * The authored form of a command. `highlight`/`click`/`scroll` reference a
+ * semantic target id from src/flows/targets.ts rather than a raw selector, so
+ * selectors live in exactly one place.
+ */
+export type FlowCommandDef =
+  | { type: "navigate"; path: string }
+  | { type: "highlight"; target: string; duration?: number }
+  | { type: "click"; target: string }
+  | { type: "fill"; target: string; value: string }
+  | { type: "scroll"; target: string }
+  | { type: "subtitle"; text: Text; duration?: number }
+  | { type: "wait"; ms: number };
+
+export interface FlowDef {
+  id: string;
+  name: Text;
+  description: Text;
+  area: FeatureArea;
+  /** Keywords the model matches against. Keep EN + DE + FR terms here. */
+  keywords: string[];
+  steps: FlowStepDef[];
+}
+
+// ── Resolved flows (what the browser receives) ─────────────────────
 
 export interface FlowStep {
   id: string;
-  action: AgentCommand["type"];
-  /** The command payload for this step */
+  action: AgentCommandType;
   command: AgentCommand;
-  /** Human-readable description shown as subtitle */
   description: string;
-  /** Wait for user action before continuing (interactive mode) */
-  waitForUser?: boolean;
-  /** CSS selector the user must click to advance (when waitForUser is true) */
-  waitSelector?: string;
 }
 
 export interface Flow {
   id: string;
   name: string;
   description: string;
-  /** Feature area this flow belongs to */
   area: FeatureArea;
-  /** Keywords that trigger this flow */
   keywords: string[];
-  /** Prerequisite flows (must complete these first) */
-  requires?: string[];
-  /** Ordered steps */
   steps: FlowStep[];
+}
+
+/** The lightweight shape used for tool descriptions and the voice prompt. */
+export interface FlowSummary {
+  id: string;
+  name: string;
+  description: string;
+  keywords: string[];
 }
 
 export type FeatureArea =
@@ -79,45 +105,44 @@ export type FeatureArea =
   | "analytics"
   | "general";
 
-// ── Knowledge Base ─────────────────────────────────────────────────
+// ── Knowledge base ─────────────────────────────────────────────────
 
 export interface FeatureKnowledge {
   area: FeatureArea;
   name: string;
   description: string;
   routes: string[];
-  /** What a new organizer needs to know */
   onboardingContext: string;
-  /** Related flows */
   flowIds: string[];
-  /** FAQ - common questions and short answers */
   faq: Array<{ question: string; answer: string }>;
 }
 
-// ── WebSocket Protocol ─────────────────────────────────────────────
+// ── Chat API ───────────────────────────────────────────────────────
 
-export type WSMessageToAgent =
-  | { type: "execute"; command: AgentCommand }
-  | { type: "flow-start"; flow: Flow; startStep?: number }
-  | { type: "flow-pause" }
-  | { type: "flow-resume" }
-  | { type: "flow-cancel" }
-  | { type: "ping" };
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
 
-export type WSMessageFromAgent =
-  | { type: "ready"; url: string }
-  | { type: "step-complete"; stepId: string }
-  | { type: "step-error"; stepId: string; error: string }
-  | { type: "user-action"; selector: string; action: string }
-  | { type: "flow-complete"; flowId: string }
-  | { type: "pong" };
+export interface GuideUser {
+  user_id?: string;
+  email?: string;
+  name?: string;
+  team?: string;
+  language?: string;
+}
 
-export type WSMessageToWidget =
-  | { type: "chat"; message: ChatMessage }
-  | { type: "flow-update"; flow: FlowExecution }
-  | { type: "typing"; isTyping: boolean }
-  | { type: "connected" };
+export interface ChatRequest {
+  sessionId: string;
+  message: string;
+  user?: GuideUser;
+  /** Where the user currently is, so the guide can skip redundant steps. */
+  path?: string;
+}
 
-export type WSMessageFromWidget =
-  | { type: "chat"; content: string }
-  | { type: "flow-control"; action: "pause" | "resume" | "cancel" | "next" };
+export interface ChatResponse {
+  reply: string;
+  commands: AgentCommand[];
+  /** Set when the model started a flow, for the step badge and cancel UI. */
+  flowId?: string;
+}

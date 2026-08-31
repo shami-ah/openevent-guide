@@ -1,190 +1,206 @@
 /**
- * The Brain - routes user questions to either text answers or guided flows.
+ * The brain: routes a user question to either a text answer or a guided flow.
  *
- * Uses OpenAI API with function calling. The LLM decides:
- * 1. Answer the question with text (informational)
- * 2. Guide the user through a flow (hands-on walkthrough)
- * 3. Both: explain briefly, then offer to guide
+ * Design rule that has not changed: the model may only trigger *predefined*
+ * flows. It never invents CSS selectors, because it cannot see the DOM and
+ * every invented selector we shipped was wrong. Flow selectors live in
+ * src/flows/targets.ts and are verified against the app.
  */
 
 import OpenAI from "openai";
 import type { ChatCompletionTool } from "openai/resources/chat/completions.js";
-import { getAllFlows, getFlowById } from "../flows/registry.js";
+import { getFlowById, getFlowSummaries } from "../flows/registry.js";
 import { KNOWLEDGE_BASE } from "../flows/knowledge.js";
-import type { AgentCommand, WSMessageToAgent } from "../shared/types.js";
+import { normalizeLang, type Lang } from "../shared/i18n.js";
+import type { AgentCommand, ChatTurn, GuideUser } from "../shared/types.js";
 
-/** Lazy-init so the server starts even without OPENAI_API_KEY set */
+const MODEL = process.env.GUIDE_MODEL ?? "gpt-4o";
+
+/** How many turns of history to send. Keeps cost bounded on long sessions. */
+export const MAX_HISTORY_TURNS = 20;
+
 let _openai: OpenAI | null = null;
 function getClient(): OpenAI {
   if (!_openai) {
     const key = process.env.OPENAI_API_KEY;
     if (!key) {
-      throw new Error(
-        "OPENAI_API_KEY is not set. Add it to .env in the openevent-guide directory."
-      );
+      throw new Error("OPENAI_API_KEY is not set. Add it to .env in the openevent-guide directory.");
     }
     _openai = new OpenAI({ apiKey: key });
   }
   return _openai;
 }
 
-const SYSTEM_PROMPT = `You are the OpenEvent Guide, an AI assistant built into the OpenEvent platform.
-You help venue managers, event organizers, and club owners learn how to use OpenEvent.
+function describeUser(user: GuideUser | null | undefined): string {
+  if (!user) return "You do not know who you are talking to yet.";
+  const bits: string[] = [];
+  if (user.name) bits.push(`Their name is ${user.name}. Use it occasionally, not in every message.`);
+  if (user.team) bits.push(`They work for ${user.team}.`);
+  if (user.language) {
+    bits.push(`Their app is set to ${normalizeLang(user.language).toUpperCase()}. Reply in that language unless they write in another one.`);
+  }
+  return bits.length ? bits.join(" ") : "You do not know who you are talking to yet.";
+}
 
-Your users are non-technical venue managers, event organizers, and club owners.
-Communicate in a friendly, clear way. Use simple language. No developer jargon.
-Speak the user's language (detect from their message - English, German, French).
+function buildSystemPrompt(user: GuideUser | null | undefined, lang: Lang, path?: string): string {
+  const flows = getFlowSummaries(lang);
+
+  return `You are the OpenEvent Guide, an AI assistant built into the OpenEvent platform.
+You help venue managers, event organizers and club owners learn to use OpenEvent.
+
+Your users are not technical. Use plain language, no developer jargon.
+Reply in the user's language: English, German or French. Match the language they write in.
+
+## Who you are talking to
+${describeUser(user)}
+${path ? `They are currently on the page ${path}. Do not walk them somewhere they already are.` : ""}
 
 ## CRITICAL RULES
 
-1. **ALWAYS use guide_flow** when the user asks "how do I...", "show me...", "where is...".
-   NEVER use execute_actions. The predefined flows have tested, working selectors.
-   execute_actions uses CSS selectors that will fail on the real app.
+1. ALWAYS use the guide_flow tool when the user asks "how do I...", "show me...",
+   "where is...". The predefined flows have selectors that are verified against
+   the real app.
+2. You cannot see the page and you must never invent CSS selectors or make up
+   page paths. If no flow fits, answer in words only.
+3. Keep text answers short: two or three sentences. Then offer a related flow.
+4. When the user says "yes", "sure", "go on", "show me" after you described
+   something, trigger the matching flow. Do not repeat the explanation.
+5. If a flow does not exist for what they asked, say what you do know and name
+   the closest flow you can offer. Never pretend to be guiding them.
 
-2. If no predefined flow matches, answer with text only. Do NOT try to generate
-   custom browser actions - they will break because you don't know the real DOM.
-
-3. Keep text responses short (2-3 sentences). After answering, suggest a related flow.
-
-4. When the user says "yes", "sure", "please", "show me" after you described something,
-   find the matching guide_flow and trigger it. Don't repeat the explanation.
-
-## Sidebar Navigation (exact selectors - DO NOT use any other selectors)
-
-| Page | Sidebar link | Route |
-|------|-------------|-------|
-| Calendar | a[href="/calendar"] | /calendar |
-| Email | a[href="/email"] | /email |
-| Payments | a[href="/payments"] | /payments |
-| Ticketing | a[href="/ticketing"] | /ticketing |
-| POS | a[href="/pos"] | /pos |
-| Members | a[href="/membership"] | /membership |
-| Website | a[href="/website"] | /website |
-| Audience | a[href="/audience"] | /audience |
-| Staff | a[href="/staff"] | /staff |
-| Reports | a[href="/reports"] | /reports |
-| Files | a[href="/files"] | /files |
-| Tasks | a[href="/tasks"] | /tasks |
-| Notes | a[href="/notes"] | /notes |
-| Settings | a[href="/settings"] | /settings |
-
-There is NO a[href="/events"] link. Events are at /calendar.
-There are NO data-guide attributes in the app. Do not use them.
-
-## OpenEvent Feature Areas
+## OpenEvent feature areas
 
 ${KNOWLEDGE_BASE}
 
-## Available Guided Flows (use guide_flow tool with these IDs)
+## Available guided flows (pass one of these ids to guide_flow)
 
-${getAllFlows()
-  .map((f) => `- **${f.id}**: ${f.name} - ${f.description} [keywords: ${f.keywords.join(", ")}]`)
-  .join("\n")}
-
-REMEMBER: ALWAYS use guide_flow, NEVER use execute_actions.
+${flows.map((f) => `- **${f.id}**: ${f.name} : ${f.description} [matches: ${f.keywords.join(", ")}]`).join("\n")}
 `;
+}
 
-/** Only guide_flow - no execute_actions (those use wrong selectors) */
 const TOOLS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
       name: "guide_flow",
       description:
-        "Start a predefined guided walkthrough. ALWAYS use this when a user asks how to do something. The flow navigates their browser, highlights elements, and shows subtitles. Never generate custom actions.",
+        "Start a predefined guided walkthrough. Use this whenever the user asks how to do something. It navigates their browser, highlights the right elements and narrates each step.",
       parameters: {
         type: "object",
         properties: {
-          flow_id: {
-            type: "string",
-            description: "The ID of the flow to execute (from the available flows list)",
-          },
-          intro_message: {
-            type: "string",
-            description: "A brief message to show the user before starting the guide (1-2 sentences)",
-          },
+          flow_id: { type: "string", description: "The id of the flow to run, from the available flows list." },
+          intro_message: { type: "string", description: "One or two sentences shown before the walkthrough starts, in the user's language." },
         },
         required: ["flow_id", "intro_message"],
+        additionalProperties: false,
       },
     },
   },
 ];
 
-interface BrainResponse {
-  text: string;
+export interface BrainRequest {
+  history: ChatTurn[];
+  user?: GuideUser | null;
+  lang: Lang;
+  path?: string;
 }
 
-export async function handleChat(
-  history: Array<{ role: "user" | "assistant"; content: string }>,
-  sendToAgent: (msg: WSMessageToAgent) => boolean,
-  agentConnected: boolean
-): Promise<BrainResponse> {
+export interface BrainResponse {
+  text: string;
+  commands: AgentCommand[];
+  flowId?: string;
+}
+
+export async function handleChat(req: BrainRequest): Promise<BrainResponse> {
+  const history = req.history.slice(-MAX_HISTORY_TURNS);
+
   try {
     const response = await getClient().chat.completions.create({
-      model: "gpt-4o",
+      model: MODEL,
       max_tokens: 1024,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...history.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        })),
+        { role: "system", content: buildSystemPrompt(req.user, req.lang, req.path) },
+        ...history.map((m) => ({ role: m.role, content: m.content })),
       ],
-      tools: agentConnected ? TOOLS : undefined,
-      tool_choice: agentConnected ? "auto" : undefined,
+      tools: TOOLS,
+      tool_choice: "auto",
     });
 
     const message = response.choices[0]?.message;
     if (!message) {
-      return { text: "I didn't get a response. Please try again." };
+      return { text: "I didn't get a response. Please try again.", commands: [] };
     }
 
-    let textParts: string[] = [];
-    let guidedSomething = false;
+    const textParts: string[] = [];
+    const commands: AgentCommand[] = [];
+    let flowId: string | undefined;
 
-    // Collect text content
-    if (message.content) {
-      textParts.push(message.content);
-    }
+    if (message.content) textParts.push(message.content);
 
-    // Process tool calls
-    if (message.tool_calls) {
-      for (const toolCall of message.tool_calls) {
-        if (toolCall.type !== "function") continue;
-        guidedSomething = true;
-        const args = JSON.parse(toolCall.function.arguments);
+    for (const toolCall of message.tool_calls ?? []) {
+      if (toolCall.type !== "function" || toolCall.function.name !== "guide_flow") continue;
 
-        if (toolCall.function.name === "guide_flow") {
-          const flow = getFlowById(args.flow_id);
-
-          if (flow) {
-            textParts.push(args.intro_message);
-            sendToAgent({ type: "flow-start", flow });
-          } else {
-            textParts.push(
-              `I wanted to show you a guide for that, but the flow "${args.flow_id}" isn't available yet. Let me explain instead.`
-            );
-          }
-        } else {
-          // Unknown tool call - ignore
-        }
+      let args: { flow_id?: string; intro_message?: string };
+      try {
+        args = JSON.parse(toolCall.function.arguments);
+      } catch {
+        continue;
       }
+
+      const flow = args.flow_id ? getFlowById(args.flow_id, req.lang) : undefined;
+      if (!flow) {
+        // Do not silently swallow this: the model picked a flow id we do not
+        // have, and the user is owed an honest answer rather than a dead guide.
+        textParts.push(
+          "I don't have a walkthrough for that one yet, so let me explain it instead : ask me and I'll describe the steps.",
+        );
+        continue;
+      }
+
+      if (args.intro_message) textParts.push(args.intro_message);
+      commands.push(...flow.steps.map((s) => s.command));
+      flowId = flow.id;
     }
 
-    // If we guided and there's no text, add a completion message
-    if (guidedSomething && textParts.length === 0) {
-      textParts.push("I'm guiding you through it now. Watch your screen!");
+    if (commands.length > 0 && textParts.length === 0) {
+      textParts.push("I'm walking you through it now : watch your screen.");
     }
 
     return {
       text:
         textParts.join("\n\n") ||
-        "I'm here to help! Ask me anything about OpenEvent, or say 'show me' to get a guided walkthrough of any feature.",
+        "I'm here to help. Ask me anything about OpenEvent, or say \"show me\" for a guided walkthrough.",
+      commands,
+      flowId,
     };
   } catch (err) {
-    console.error("[brain] Error calling OpenAI:", err);
+    console.error("[brain] OpenAI call failed:", err);
     return {
       text: "I'm having trouble connecting right now. Please try again in a moment.",
+      commands: [],
     };
   }
+}
+
+/** The instructions the voice agent runs with. Shares the brain's knowledge. */
+export function buildVoiceInstructions(user: GuideUser | null | undefined, lang: Lang): string {
+  const flows = getFlowSummaries(lang);
+  return `You are the OpenEvent Guide, talking to a venue manager on a live voice call while you control their browser.
+
+${describeUser(user)}
+
+Keep spoken answers to one or two sentences. You are on a call, not writing documentation.
+Speak the user's language: English, German or French.
+
+When they ask how to do something, call guide_flow with one of these ids and then narrate
+briefly while it runs. Do not describe the steps yourself, the walkthrough does that.
+
+Available flows:
+${flows.map((f) => `- ${f.id}: ${f.name} : ${f.description}`).join("\n")}
+
+You may also call navigate to take them to a page directly. You cannot see the page and you
+must never invent CSS selectors. If nothing fits, just answer in words.
+
+Product knowledge:
+${KNOWLEDGE_BASE}`;
 }

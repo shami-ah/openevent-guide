@@ -4,7 +4,13 @@
  * Complete product knowledge for the AI brain. This is what makes the guide
  * understand the entire application from a user's perspective.
  *
- * Based on production code at fsoell/openeventgithub (main branch).
+ * Based on production code at fsoell/OpeneventGithub (staging).
+ *
+ * This is prose for the model, not a routing table. The paths mentioned here
+ * help it describe the product; they are NOT the source of truth for
+ * navigation. Anything a flow actually navigates to must be listed in
+ * src/shared/appRoutes.ts, which is verified against the app and enforced by
+ * src/flows/registry.test.ts.
  */
 
 export const KNOWLEDGE_BASE = `

@@ -1,37 +1,39 @@
 /**
- * Content script: bridges between the SDK (page context) and
- * the background service worker (extension context, CSP-immune).
+ * Content script: the bridge between the page and the service worker.
  *
- * SDK -> postMessage -> loader.js -> chrome.runtime -> background.js -> fetch
- * Result flows back the same way.
+ *   SDK (page) -> postMessage -> loader.js -> chrome.runtime -> background.js
+ *
+ * and the response back the same way.
  */
 
 (function () {
   if (window.__oeGuideLoaded) return;
   window.__oeGuideLoaded = true;
 
-  // Ask background to inject the SDK
   chrome.runtime.sendMessage({ type: "inject-sdk" });
 
-  // Relay API calls from SDK (page) to background (extension)
   window.addEventListener("message", function (event) {
+    // Only accept messages this page posted to itself.
     if (event.source !== window) return;
+    if (event.origin !== window.location.origin) return;
     if (!event.data || event.data.source !== "oeg-sdk") return;
+    if (event.data.type !== "api-request") return;
 
     var msg = event.data;
 
-    if (msg.type === "api-request") {
-      chrome.runtime.sendMessage(
-        { type: "api-request", url: msg.url, options: msg.options, reqId: msg.reqId },
-        function (response) {
-          window.postMessage({
+    chrome.runtime.sendMessage(
+      { type: "api-request", url: msg.url, options: msg.options, reqId: msg.reqId },
+      function (response) {
+        window.postMessage(
+          {
             source: "oeg-ext",
             type: "api-response",
             reqId: msg.reqId,
-            response: response
-          }, "*");
-        }
-      );
-    }
+            response: response || { ok: false, error: "No response from the extension." },
+          },
+          window.location.origin
+        );
+      }
+    );
   });
 })();
