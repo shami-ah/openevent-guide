@@ -96,6 +96,56 @@ function waitForElement(
 }
 
 /**
+ * Wait for the route's main content to appear after a client-side navigation.
+ *
+ * React Router updates the URL synchronously but the component tree renders
+ * asynchronously: Suspense boundaries, lazy-loaded chunks, data loaders, and
+ * layout shifts from loading states all mean the page is not "ready" the
+ * moment the URL changes. A fixed 600ms sleep used to approximate this, but
+ * heavy pages (settings sub-routes, membership) often need more.
+ *
+ * Instead we watch for a DOM signal that new content has landed:
+ *   1. A `main` or `[role="main"]` element gaining new children.
+ *   2. Failing that, any substantive mutation in the body.
+ * With a ceiling so we never wait forever.
+ */
+function waitForRouteContent(timeout = 3000, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      // One extra frame so the paint that triggered us is actually visible.
+      requestAnimationFrame(() => resolve());
+    };
+
+    // We only need one meaningful mutation after the route changed.
+    let mutationCount = 0;
+    const observer = new MutationObserver((records) => {
+      for (const r of records) {
+        if (r.addedNodes.length > 0) mutationCount += r.addedNodes.length;
+      }
+      // A few added nodes means the route's component tree rendered.
+      if (mutationCount >= 3) finish();
+    });
+
+    const root = document.querySelector("main, [role='main']") ?? document.body;
+    observer.observe(root, { childList: true, subtree: true });
+
+    const onAbort = () => finish();
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    // Ceiling: if nothing mutates (page was already rendered), resolve anyway.
+    const timer = setTimeout(finish, timeout);
+  });
+}
+
+/**
  * Navigate without reloading the page.
  *
  * This used to fall back to `window.location.href = path`, which reloads the
@@ -128,12 +178,14 @@ async function navigateTo(path: string, signal?: AbortSignal): Promise<CommandRe
 
   // Verify we actually arrived. Some routes redirect on landing
   // (/membership -> /membership/dashboard), which pathMatches accepts.
-  const deadline = Date.now() + 4000;
+  const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     if (signal?.aborted) return ok;
     if (pathMatches(window.location.pathname, path)) {
-      // Let React render the new route before the next step looks for anything.
-      await sleep(600, signal);
+      // Wait for React to actually render the new route's content, rather
+      // than sleeping a fixed duration that may be too short for heavy pages
+      // or too long for lightweight ones.
+      await waitForRouteContent(2000, signal);
       return ok;
     }
     await sleep(100, signal);
@@ -190,31 +242,50 @@ function notFound(label: string | undefined): CommandResult {
   };
 }
 
+/**
+ * Helper: show the command's subtitle on the overlay, but only AFTER the
+ * associated visual (navigation, highlight, etc.) has landed. Showing it
+ * before the command executes was the root cause of the "subtitle says X
+ * while the highlight points at Y" mismatch.
+ */
+function showCommandSubtitle(command: AgentCommand): void {
+  if ("subtitle" in command && command.subtitle) {
+    showSubtitle(command.subtitle, 0); // 0 = hold until the next subtitle
+  }
+}
+
 export async function executeCommand(
   command: AgentCommand,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
   if (signal?.aborted) return ok;
 
-  if ("subtitle" in command && command.subtitle) {
-    showSubtitle(command.subtitle, 0); // 0 = hold until the next subtitle
-  }
+  // Clear the previous step's highlight before starting this one, so stale
+  // boxes never overlap with the new subtitle.
+  if (command.type !== "clear") clearHighlight();
 
   switch (command.type) {
-    case "navigate":
-      return navigateTo(command.path, signal);
+    case "navigate": {
+      // Show subtitle AFTER navigation completes so the text matches the
+      // page the user is actually looking at.
+      const result = await navigateTo(command.path, signal);
+      if (result.ok) showCommandSubtitle(command);
+      return result;
+    }
 
     case "highlight": {
       const found = await waitForElement(command.selector, 3000, signal);
       if (!found) return notFound(command.label);
+      // Subtitle appears together with the highlight, never before it.
+      showCommandSubtitle(command);
       highlightElement(found.selector, command.duration);
       return ok;
     }
 
     case "click": {
-      clearHighlight();
       const found = await waitForElement(command.selector, 5000, signal);
       if (!found) return notFound(command.label);
+      showCommandSubtitle(command);
       highlightElement(found.selector);
       await sleep(1000, signal);
       if (signal?.aborted) return ok;
@@ -230,6 +301,7 @@ export async function executeCommand(
       if (!(found.el instanceof HTMLInputElement) && !(found.el instanceof HTMLTextAreaElement)) {
         return { ok: false, reason: `${command.label ?? "That field"} isn't a text field I can type into.` };
       }
+      showCommandSubtitle(command);
       highlightElement(found.selector);
       await sleep(400, signal);
       await simulateTyping(found.el, command.value, signal);
@@ -240,6 +312,7 @@ export async function executeCommand(
     case "scroll": {
       const found = await waitForElement(command.selector, 3000, signal);
       if (!found) return notFound(command.label);
+      showCommandSubtitle(command);
       found.el.scrollIntoView({ behavior: "smooth", block: "center" });
       await sleep(500, signal);
       return ok;

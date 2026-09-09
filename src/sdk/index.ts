@@ -515,14 +515,21 @@ async function executeFlow(commands: AgentCommand[]): Promise<FlowOutcome> {
 
       if (commands.length > 2) showStepBadge(i + 1, commands.length);
 
-      if (cmd.type === "subtitle") addStatus(cmd.text);
-      else if ("subtitle" in cmd && cmd.subtitle) addStatus(cmd.subtitle);
-      else if (cmd.type === "navigate") addStatus(`Opening ${cmd.path}...`);
+      // For navigate, show a brief "Opening..." before navigation so the
+      // user knows something is happening, but the real subtitle (from the
+      // command) only appears after the page loads (executor handles that).
+      if (cmd.type === "navigate") addStatus(`Opening ${cmd.path}...`);
 
       const result = await executeCommand(cmd, signal);
 
+      // Status messages for successful commands — shown AFTER execution so
+      // the chat text matches what is actually on screen.
+      if (result.ok) {
+        if (cmd.type === "subtitle") addStatus(cmd.text);
+        else if ("subtitle" in cmd && cmd.subtitle) addStatus(cmd.subtitle);
+      }
+
       if (!result.ok && result.reason) {
-        // Say so, rather than narrating over a highlight that never appeared.
         failures++;
         addStatus(result.reason);
         if (result.fatal) { completed = false; break; }
@@ -681,10 +688,12 @@ async function startCall(): Promise<void> {
     state.micOn = true;
     render();
   } catch (err) {
-    console.error("[oe-guide] Call failed:", err);
+    const msg = (err as Error)?.message ?? "";
+    console.error("[oe-guide] Call failed:", msg, err);
     state.callStatus = "idle";
     state.mode = "chat";
-    addStatus((err as Error)?.message ?? "I couldn't start the call. Let's chat instead.");
+    // Show the real reason so users (and the developer) can diagnose it.
+    addStatus(msg || "I couldn't start the call. Let's chat instead.");
   }
 }
 

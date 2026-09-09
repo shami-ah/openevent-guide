@@ -142,12 +142,26 @@ interface StartVoiceOptions {
   callbacks: VoiceCallbacks;
 }
 
+/** Race a promise against a timeout. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s.`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 export async function startVoice(opts: StartVoiceOptions): Promise<void> {
   if (vs.active) return;
 
   const mic = checkMicAvailability();
   if (!mic.available) {
-    throw new Error(mic.detail ?? "Microphone is not available on this page.");
+    const hint = mic.reason === "blocked-by-permissions-policy"
+      ? "Voice is blocked by this site's security policy. The site admin needs to allow the microphone in their server configuration (Permissions-Policy header). Let's chat instead."
+      : mic.detail ?? "Microphone is not available on this page.";
+    throw new Error(hint);
   }
 
   vs.callbacks = opts.callbacks;
@@ -155,13 +169,24 @@ export async function startVoice(opts: StartVoiceOptions): Promise<void> {
 
   try {
     // 1. Token + instructions from our server.
-    const session = (await opts.apiFetch(`${opts.serverUrl}/api/voice-session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: opts.sessionId, lang: opts.lang }),
-    })) as { clientSecret?: string; instructions?: string; model?: string };
+    const session = await withTimeout(
+      opts.apiFetch(`${opts.serverUrl}/api/voice-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: opts.sessionId, lang: opts.lang }),
+      }) as Promise<{ clientSecret?: string; instructions?: string; model?: string; error?: string; detail?: string }>,
+      10_000,
+      "Voice session setup",
+    );
 
-    if (!session.clientSecret) throw new Error("The server did not return a voice token.");
+    if (!session.clientSecret) {
+      const detail = session.detail ?? session.error ?? "";
+      throw new Error(
+        detail
+          ? `Could not start voice: ${detail}`
+          : "The server did not return a voice token. The OpenAI Realtime API may be unavailable.",
+      );
+    }
 
     // 2. Peer connection + audio sink.
     const pc = new RTCPeerConnection();
@@ -176,13 +201,17 @@ export async function startVoice(opts: StartVoiceOptions): Promise<void> {
 
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-        opts.callbacks.onError("The call dropped.");
+        opts.callbacks.onError("The call dropped. Try again or switch to chat.");
         stopVoice();
       }
     };
 
-    // 3. Microphone.
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // 3. Microphone — wrap in timeout so a stuck permission prompt doesn't hang.
+    const stream = await withTimeout(
+      navigator.mediaDevices.getUserMedia({ audio: true }),
+      8_000,
+      "Microphone access",
+    );
     vs.stream = stream;
     vs.micEnabled = true;
     stream.getTracks().forEach((track) => pc.addTrack(track, stream));
@@ -218,18 +247,29 @@ export async function startVoice(opts: StartVoiceOptions): Promise<void> {
     await pc.setLocalDescription(offer);
 
     // 6. SDP through our server, not straight to OpenAI.
-    const sdpResult = (await opts.apiFetch(`${opts.serverUrl}/api/voice-sdp`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: opts.sessionId,
-        sdp: offer.sdp,
-        clientSecret: session.clientSecret,
-        model: session.model,
-      }),
-    })) as { answer?: string };
+    const sdpResult = await withTimeout(
+      opts.apiFetch(`${opts.serverUrl}/api/voice-sdp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: opts.sessionId,
+          sdp: offer.sdp,
+          clientSecret: session.clientSecret,
+          model: session.model,
+        }),
+      }) as Promise<{ answer?: string; error?: string; detail?: string }>,
+      15_000,
+      "Voice handshake",
+    );
 
-    if (!sdpResult.answer) throw new Error("The voice handshake did not return an answer.");
+    if (!sdpResult.answer) {
+      const detail = sdpResult.detail ?? sdpResult.error ?? "";
+      throw new Error(
+        detail
+          ? `Voice handshake failed: ${detail}`
+          : "The voice handshake did not return an answer. The Realtime API endpoint may have changed.",
+      );
+    }
 
     await pc.setRemoteDescription({ type: "answer", sdp: sdpResult.answer });
 

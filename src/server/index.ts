@@ -235,13 +235,26 @@ app.post("/api/voice-session", async (c) => {
     return c.json({ error: "Failed to create voice session", detail: err.slice(0, 300) }, 502);
   }
 
-  const data = (await res.json()) as { client_secret?: { value?: string } | string };
-  const clientSecret =
-    typeof data.client_secret === "string" ? data.client_secret : data.client_secret?.value;
+  const data = (await res.json()) as Record<string, unknown>;
+
+  // OpenAI has shipped multiple response shapes for the Realtime session
+  // endpoint: { client_secret: "..." }, { client_secret: { value: "..." } },
+  // and potentially others. Try all known layouts.
+  let clientSecret: string | undefined;
+  const raw = data.client_secret;
+  if (typeof raw === "string") {
+    clientSecret = raw;
+  } else if (raw && typeof raw === "object" && "value" in (raw as Record<string, unknown>)) {
+    clientSecret = String((raw as Record<string, unknown>).value);
+  }
 
   if (!clientSecret) {
-    console.error("[voice] No client secret in response:", JSON.stringify(data).slice(0, 300));
-    return c.json({ error: "Voice session response had no client secret" }, 502);
+    const preview = JSON.stringify(data).slice(0, 400);
+    console.error("[voice] No client secret in response:", preview);
+    return c.json({
+      error: "Voice session response had no client secret",
+      detail: `OpenAI returned an unexpected shape. Preview: ${preview}`,
+    }, 502);
   }
 
   return c.json({
@@ -286,8 +299,12 @@ app.post("/api/voice-sdp", async (c) => {
 
   const answer = await res.text();
   if (!res.ok) {
-    console.error("[voice] SDP exchange failed:", res.status, answer.slice(0, 300));
-    return c.json({ error: "SDP exchange failed", status: res.status, detail: answer.slice(0, 300) }, 502);
+    const detail = answer.slice(0, 400);
+    console.error("[voice] SDP exchange failed:", res.status, detail);
+    return c.json({
+      error: "SDP exchange failed",
+      detail: `OpenAI returned ${res.status}. ${detail}`,
+    }, 502);
   }
 
   return c.json({ answer });
