@@ -97,9 +97,11 @@ Add to the OpenEvent nginx server block:
 ```nginx
 # The onboarding guide: SDK bundle and API, proxied so the page only ever
 # talks to its own origin and no CSP directive needs widening.
-location /guide/ {
+# ^~ is load-bearing, do not remove it. See the note below.
+location ^~ /guide/ {
     proxy_pass         https://ahtesham.dev.wadwarehouse.com/guide/;
     proxy_set_header   Host ahtesham.dev.wadwarehouse.com;
+    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_ssl_server_name on;
     proxy_read_timeout 60s;
 }
@@ -108,25 +110,63 @@ location /guide/ {
 Now `https://app.test.openevent.io/guide/sdk.js` serves the SDK and
 `/guide/api/*` reaches the guide server, both under `'self'`.
 
-### Step 2: boot it with a script tag
+**Why `^~`.** The app's server block ends with a static-asset regex,
+`location ~* \.(js|css|png|...)$`. nginx checks regex locations *before* plain
+prefix locations, so without `^~` the request for `/guide/sdk.js` matches that
+regex, is looked up in `/usr/share/nginx/html`, and 404s. `/guide/health` and
+`/guide/api/*` have no file extension, so they still proxy correctly, which
+makes it look like a broken `proxy_pass` when it is location precedence. `^~`
+tells nginx that when this prefix matches, it must not evaluate regexes at all.
 
-In `index.html`, or wherever third-party widgets are loaded:
+**No `add_header` in this block.** An `add_header` inside a location drops every
+`add_header` it would otherwise inherit from the server block, which would
+silently strip the app's CSP and Permissions-Policy from `/guide/` responses.
+
+**`X-Forwarded-For`** lets the guide server rate limit on the real client
+address. `GUIDE_TRUST_PROXY` is the number of proxies in front of the guide
+server that append to the header. With this block plus the guide host's own
+reverse proxy that is `2`, and the guide host's proxy must use
+`$proxy_add_x_forwarded_for` too, or a client could forge the address it is
+limited on. Without the header, every OpenEvent user shares one rate-limit
+bucket.
+
+### Step 2: load it with a script tag, boot it from the app
+
+Two parts, in two different places.
+
+**2a. Load the SDK in `index.html`.** This is only the script tag, and it being
+same-origin is what keeps CSP unchanged:
 
 ```html
 <script src="/guide/sdk.js" defer></script>
-<script>
-  window.addEventListener("load", function () {
-    window.OpenEventGuide.boot({
-      user_id: currentUser.id,
-      name: currentUser.name,
-      email: currentUser.email,
-      language: i18n.language,     // "en" | "de" | "fr"
-      server: "/guide",
-      token: "<GUIDE_API_TOKEN>",  // only if the server runs with one set
-    });
-  });
-</script>
 ```
+
+**2b. Call `boot()` from the application, once auth has resolved.** Do not boot
+from an inline script in `index.html`. That file has no `currentUser` or `i18n`
+global (its only scripts are `/bootstrap/boot.js` and the `/src/main.tsx`
+module) and it runs before authentication resolves, so an inline handler throws
+`ReferenceError: currentUser is not defined`, `boot()` never runs, and the
+widget never appears. Boot from an effect that runs once the user and language
+are known, guarding on the SDK having loaded:
+
+```ts
+useEffect(() => {
+  if (!user || !window.OpenEventGuide) return;
+  window.OpenEventGuide.boot({
+    user_id: user.id,
+    name: user.name,
+    email: user.email,
+    language: i18n.language,     // "en" | "de" | "fr"
+    server: "/guide",
+    token: import.meta.env.VITE_GUIDE_API_TOKEN,
+  });
+}, [user, i18n.language]);
+```
+
+A public guide server now refuses to start without `GUIDE_API_TOKEN`, so the
+app has to send it. Because the token ships in the app bundle, anyone who can
+load the app can read it. It stops drive-by use of the URL; it is not per-user
+authentication.
 
 The Chrome extension is then unnecessary and should be uninstalled: no
 `chrome.scripting` injection, no fetch proxy, no bundled `sdk.js` drifting out
@@ -248,8 +288,14 @@ Done in this repo:
 Left to do, outside this repo:
 
 1. The `microphone=(self)` header change (section 4, step 3).
-2. The nginx `/guide/` proxy and the script tag (section 4, steps 1 and 2).
-3. Re-verify the Realtime endpoints against OpenAI's current API. This repo
-   defaults to `/v1/realtime/sessions` and `/v1/realtime` with the
-   `OpenAI-Beta: realtime=v1` header. If OpenAI has retired the beta path, set
-   the two env vars rather than editing code.
+2. The nginx `location ^~ /guide/` proxy, the script tag and the in-app
+   `boot()` call (section 4, steps 1 and 2).
+3. Re-verify the Realtime endpoints and model against OpenAI's current API.
+   This repo defaults to `/v1/realtime/sessions` and `/v1/realtime` with the
+   `OpenAI-Beta: realtime=v1` header, and to the model
+   `gpt-4o-realtime-preview`, which is a *preview* model. The GA API uses
+   `/v1/realtime/client_secrets` and `/v1/realtime/calls` and has its own GA
+   models. Settle the endpoints and the model in the same pass, because a GA
+   endpoint may not accept a preview model. If OpenAI has retired the beta
+   path, set the env vars (`GUIDE_REALTIME_SESSION_URL`,
+   `GUIDE_REALTIME_SDP_URL`, `GUIDE_REALTIME_MODEL`) rather than editing code.

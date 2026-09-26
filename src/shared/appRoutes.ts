@@ -1,9 +1,12 @@
 /**
  * The OpenEvent routes the guide is allowed to navigate to.
  *
- * Verified against fsoell/OpeneventGithub @ origin/staging on 2026-08-31 by
- * reading src/PrivateAppShell.tsx. This list is the contract the flow registry
- * is tested against (src/flows/registry.test.ts) so a renamed route in the app
+ * Last verified against fsoell/OpeneventGithub @ origin/staging on 2026-09-25
+ * (re-checked 2026-09-27) by reading src/PrivateAppShell.tsx. /settings/brand
+ * was removed then: the app has no such route, and its catch-all
+ * /settings/:section?/:subtab? silently showed the Settings overview instead.
+ *
+ * This list is the contract the flow registry is tested against (src/flows/registry.test.ts) so a renamed route in the app
  * fails the guide's build instead of dead-ending a user mid-walkthrough.
  *
  * Re-verify with:
@@ -40,7 +43,6 @@ export const APP_ROUTES = [
   "/welcome",
   "/settings",
   "/settings/business",
-  "/settings/brand",
   "/settings/payments",
   "/settings/ticketing",
   "/settings/rooms",

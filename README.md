@@ -64,20 +64,32 @@ and that navigation uses the History API rather than reloading the page. See
 
 ### Production: a script tag from the app's own origin
 
-Proxy `/guide/` through OpenEvent's nginx to this server, then:
+Proxy `/guide/` through OpenEvent's nginx to this server with
+`location ^~ /guide/`. The `^~` is load-bearing: without it the app's
+static-asset regex location catches `/guide/sdk.js` and 404s it.
+
+Then load the SDK in `index.html`:
 
 ```html
 <script src="/guide/sdk.js" defer></script>
-<script>
-  window.addEventListener("load", function () {
-    window.OpenEventGuide.boot({
-      user_id: currentUser.id,
-      name: currentUser.name,
-      language: i18n.language,   // "en" | "de" | "fr"
-      server: "/guide",
-    });
+```
+
+and boot it from the app once auth has resolved. Booting from an inline script
+in `index.html` does not work: that page has no `currentUser` or `i18n` global
+and runs before login, so the handler throws and the widget never appears.
+
+```ts
+useEffect(() => {
+  if (!user || !window.OpenEventGuide) return;
+  window.OpenEventGuide.boot({
+    user_id: user.id,
+    name: user.name,
+    email: user.email,
+    language: i18n.language,   // "en" | "de" | "fr"
+    server: "/guide",
+    token: import.meta.env.VITE_GUIDE_API_TOKEN,
   });
-</script>
+}, [user, i18n.language]);
 ```
 
 Because everything is same-origin, OpenEvent's CSP needs no changes at all.
