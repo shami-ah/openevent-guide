@@ -4,3 +4,5 @@ dist/
 *.log
 *.pem
 .DS_Store
+.env.*
+!.env.example
