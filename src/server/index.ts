@@ -9,6 +9,7 @@
 import "dotenv/config";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
+import { describeLlm } from "./brain.js";
 import { resolveServerConfig, type ServerConfig } from "./security.js";
 
 const PORT = Number(process.env.PORT ?? 3847);
@@ -30,6 +31,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: config.host }, () => {
   console.log(`\n  OpenEvent Guide Server`);
   console.log(`  ---------------------`);
   console.log(`  http://${config.host.includes(":") ? `[${config.host}]` : config.host}:${PORT}`);
+  console.log(`  Chat model: ${describeLlm()}`);
   console.log(`  GET  /sdk.js             (the SDK bundle)`);
   console.log(`  GET  /api/flows          (flow summaries)`);
   console.log(`  GET  /api/flow/:id       (one resolved flow)`);

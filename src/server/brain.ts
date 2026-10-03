@@ -14,21 +14,69 @@ import { KNOWLEDGE_BASE } from "../flows/knowledge.js";
 import { normalizeLang, type Lang } from "../shared/i18n.js";
 import type { AgentCommand, ChatTurn, GuideUser } from "../shared/types.js";
 
-const MODEL = process.env.GUIDE_MODEL ?? "gpt-4o";
+/**
+ * Chat providers. Both speak the OpenAI chat completions API, so one client
+ * serves either; only the key, base URL and default model differ. Voice is not
+ * covered: it needs OpenAI's Realtime API, which NVIDIA does not offer.
+ */
+const LLM_PROVIDERS = {
+  openai: { keyVar: "OPENAI_API_KEY", baseURL: undefined, defaultModel: "gpt-4o" },
+  // Default picked on 2026-10-04: of the models on the account that call
+  // tools reliably, the largest one that answers in seconds, not minutes.
+  nvidia: { keyVar: "NVIDIA_API_KEY", baseURL: "https://integrate.api.nvidia.com/v1", defaultModel: "nvidia/nemotron-3-super-120b-a12b" },
+} as const;
+
+export type LlmProvider = keyof typeof LLM_PROVIDERS;
+
+export interface LlmConfig {
+  provider: LlmProvider;
+  keyVar: string;
+  apiKey: string;
+  baseURL?: string;
+  model: string;
+}
+
+/**
+ * GUIDE_LLM_PROVIDER picks the provider explicitly. Unset, it is OpenAI when
+ * OPENAI_API_KEY is set and NVIDIA when only NVIDIA_API_KEY is. GUIDE_MODEL
+ * overrides the provider's default model; leave it empty to use the default.
+ */
+export function resolveLlmConfig(env: Record<string, string | undefined>): LlmConfig {
+  const requested = env.GUIDE_LLM_PROVIDER?.trim().toLowerCase();
+  if (requested && !(requested in LLM_PROVIDERS)) {
+    throw new Error(`GUIDE_LLM_PROVIDER must be one of ${Object.keys(LLM_PROVIDERS).join(", ")} (got "${requested}").`);
+  }
+  const provider: LlmProvider =
+    (requested as LlmProvider | undefined) ?? (!env.OPENAI_API_KEY && env.NVIDIA_API_KEY ? "nvidia" : "openai");
+  const p = LLM_PROVIDERS[provider];
+  return {
+    provider,
+    keyVar: p.keyVar,
+    apiKey: env[p.keyVar] ?? "",
+    baseURL: p.baseURL,
+    model: env.GUIDE_MODEL?.trim() || p.defaultModel,
+  };
+}
+
+const LLM = resolveLlmConfig(process.env);
 
 /** How many turns of history to send. Keeps cost bounded on long sessions. */
 export const MAX_HISTORY_TURNS = 20;
 
-let _openai: OpenAI | null = null;
+let _client: OpenAI | null = null;
 function getClient(): OpenAI {
-  if (!_openai) {
-    const key = process.env.OPENAI_API_KEY;
-    if (!key) {
-      throw new Error("OPENAI_API_KEY is not set. Add it to .env in the openevent-guide directory.");
+  if (!_client) {
+    if (!LLM.apiKey) {
+      throw new Error(`${LLM.keyVar} is not set. Add it to .env in the openevent-guide directory.`);
     }
-    _openai = new OpenAI({ apiKey: key });
+    _client = new OpenAI({ apiKey: LLM.apiKey, baseURL: LLM.baseURL });
   }
-  return _openai;
+  return _client;
+}
+
+/** For the startup banner. */
+export function describeLlm(): string {
+  return `${LLM.provider} / ${LLM.model}`;
 }
 
 function describeUser(user: GuideUser | null | undefined): string {
@@ -116,7 +164,7 @@ export async function handleChat(req: BrainRequest): Promise<BrainResponse> {
 
   try {
     const response = await getClient().chat.completions.create({
-      model: MODEL,
+      model: LLM.model,
       max_tokens: 1024,
       messages: [
         { role: "system", content: buildSystemPrompt(req.user, req.lang, req.path) },
@@ -174,7 +222,7 @@ export async function handleChat(req: BrainRequest): Promise<BrainResponse> {
       flowId,
     };
   } catch (err) {
-    console.error("[brain] OpenAI call failed:", err);
+    console.error("[brain] Chat model call failed:", err);
     return {
       text: "I'm having trouble connecting right now. Please try again in a moment.",
       commands: [],
